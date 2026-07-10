@@ -1,0 +1,5 @@
+*.step
+*.3mf
+__pycache__/
+*.pyc
+tools/build_counter.txt

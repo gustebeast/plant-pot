@@ -1,0 +1,738 @@
+"""The perforated plant pot.
+
+Build order:
+  1. solid shell      — outer cylinder bored to leave a thin wall + flat floor
+  2. cut hex holes    — pointy-top honeycomb over the wall, skipping a solid
+                        frame around each rib, each handle, and the drain channel
+  3. cut grab handles — two handles, each a tangential row of pointy-top
+                        hexagonal finger holes (one per finger) below the rim cap
+  4. cut floor holes  — (optional) hex honeycomb through the floor membrane,
+                        in the bays between the floor ribs
+  5. add vertical ribs — full-height internal ribs (rim → floor)
+  6. add floor ribs   — a waffle on the inside of the floor
+  7. drain pipe       — (optional) a vertical 360° tube running floor → rim,
+                        merged into the wall (its outer band overlaps it) and
+                        recessed inside the OD; a small bore-through-the-floor
+                        is cut so a hose threaded down the pipe's bore reaches
+                        the outer cachepot's reservoir; the pipe wall is
+                        hex-perforated on its inward (soil-facing) arc, down to
+                        the floor
+  8. (optional) drainage round-holes through the floor
+
+Everything *removed* (wall hex + handles + floor hex) is collected and cut in
+chunked batches; everything *added* (ribs) is unioned. Each hole cutter is a
+flat radial slab thick enough in X to clear the curved wall over the full width
+of the hole — see helpers.hex_prism. There are several thousand of these (the
+perforation is fine), so a full build takes tens of minutes.
+"""
+
+import math
+import os
+
+import cadquery as cq
+
+# Ask OCCT to run its boolean engine multi-threaded (off by default in cadquery).
+# Geometry is unchanged — just spreads each cut across cores. Best-effort.
+try:
+    from OCP.BOPAlgo import BOPAlgo_Options
+    BOPAlgo_Options.SetParallelMode_s(True)
+except Exception:
+    pass
+
+from .dimensions import (
+    POT_OD, POT_ID, POT_H, WALL_T, FLOOR_T,
+    R_IN, R_OUT, R_MID,
+    IS_POLY, NUM_FACES, FACE_ANGLES, APO_OUT, APO_IN, CORNER_FILLET,
+    IS_TAPER, R_BASE, R_TOP, COS_HALF, APO_IN_BASE, RIM_CAP_H,
+    rc_out_at, rc_in_at, apo_out_at, apo_in_at,
+    SLIT_W, SLIT_H, SLIT_LIG, SLIT_COL_PITCH, SLIT_ROW_PITCH, SLIT_HALF_H, SLIT_HALF_W,
+    PERF_Z_LO, PERF_Z_HI, PERF_TOP_Z,
+    HANDLE_ANGLES, HANDLE_W, HANDLE_FINGERS, HANDLE_FINGER_AF, HANDLE_FINGER_GAP,
+    HANDLE_Z_LO, HANDLE_Z_HI, HANDLE_Z_MID, HANDLE_FRAME,
+    RIB_ANGLES, RIB_W, RIB_PROJ, RIB_Z_LO, RIB_Z_HI,
+    FLOOR_RIB_T, FLOOR_RIB_H, FLOOR_SPOKE_COUNT, FLOOR_SPOKE_R_IN, FLOOR_SPOKE_R_OUT,
+    FLOOR_SPOKE_OFFSET, FLOOR_SPOKE_ANGLES, FLOOR_RING_RADII,
+    FLOOR_PERF, FLOOR_PERF_FRAME, FLOOR_PERF_R_IN,
+    DRAINAGE, DRAIN_HOLE_D, DRAIN_RING_R, DRAIN_RING_N,
+    DRAIN_CHANNEL, DRAIN_CHANNEL_R_CH, DRAIN_CHANNEL_TUBE_OR, DRAIN_CHANNEL_FLOOR_BORE_R,
+    DRAIN_CHANNEL_R_AXIS, DRAIN_CHANNEL_R_AXIS_BASE, DRAIN_CHANNEL_R_AXIS_TOP,
+    DRAIN_CHANNEL_ANGLE, DRAIN_CHANNEL_KEEPOUT_DEG,
+    DRAIN_CHANNEL_PERF_SOLID_HALF_DEG,
+    BOOL_OVERSHOOT, RADIAL_CUT_LO, RADIAL_CUT_HI,
+)
+from .helpers import cyl, tube, poly_prism, compound, hex_prism, slit_prism
+
+
+# ── 1. Solid shell ───────────────────────────────────────────────────────────
+
+def _poly_pts(circ_r: float):
+    return [(circ_r * math.cos(math.pi / NUM_FACES + k * 2.0 * math.pi / NUM_FACES),
+             circ_r * math.sin(math.pi / NUM_FACES + k * 2.0 * math.pi / NUM_FACES))
+            for k in range(NUM_FACES)]
+
+
+def _taper_section(base_r: float, top_r: float, z0: float, z1: float) -> cq.Workplane:
+    """Straight-walled tapered solid from circumradius base_r at z0 to top_r at
+    z1. Round → an analytic cone (cq.Solid.makeCone): this matters a lot, because
+    a *lofted* circle-to-circle wall comes out as a BSpline surface and every one
+    of the thousands of hex boolean cuts against it is enormously slower than
+    against an analytic cone. Faceted → a ruled loft between the two polygons
+    (planar faces, so cutting stays fast)."""
+    if not IS_POLY:
+        cone = cq.Solid.makeCone(base_r, top_r, z1 - z0,
+                                 pnt=cq.Vector(0, 0, z0), dir=cq.Vector(0, 0, 1))
+        return cq.Workplane("XY").newObject([cone])
+    return (cq.Workplane("XY").workplane(offset=z0).polyline(_poly_pts(base_r)).close()
+            .workplane(offset=z1 - z0).polyline(_poly_pts(top_r)).close()
+            .loft(ruled=True))
+
+
+def _fillet_vertical_corners(wp: cq.Workplane, radius: float) -> cq.Workplane:
+    """Fillet the (near-)vertical corner edges of a (possibly tapered) prism —
+    selected as the edges whose endpoints span most of the height, so it works
+    whether the corner edges are exactly vertical (straight wall) or slanted
+    (tapered)."""
+    if radius <= 0.0:
+        return wp
+    edges = [e for e in wp.val().Edges()
+             if abs(e.endPoint().z - e.startPoint().z) > 0.5 * POT_H]
+    return wp.newObject(edges).fillet(radius)
+
+
+def _shell() -> cq.Workplane:
+    """Outer wall solid, bored out above the floor — leaving a uniform wall and
+    a flat bottom, open at the top. Round → cylinder/frustum; faceted → N-gon
+    prism with filleted corners. The wall tapers at an even draft from the base
+    OD to the top OD when those differ (IS_TAPER)."""
+    bore_h = (POT_H - FLOOR_T) + BOOL_OVERSHOOT     # cavity from the floor top up through the rim
+    inner_fillet = max(0.0, CORNER_FILLET - WALL_T)  # keep the wall ~uniform around the corner
+
+    if not IS_TAPER:
+        # Straight wall — keep the original prism/cylinder construction.
+        if not IS_POLY:
+            return cyl(POT_OD, POT_H, z=0.0).cut(cyl(POT_ID, bore_h, z=FLOOR_T))
+        outer = poly_prism(R_OUT, NUM_FACES, POT_H, z=0.0, fillet=CORNER_FILLET)
+        bore  = poly_prism(R_IN, NUM_FACES, bore_h, z=FLOOR_T, fillet=inner_fillet)
+        return outer.cut(bore)
+
+    # Tapered wall — base→top at an even draft. The bore uses the same draft,
+    # offset inward by the wall (so the perpendicular wall thickness stays
+    # uniform with height).
+    outer = _fillet_vertical_corners(_taper_section(R_BASE, R_TOP, 0.0, POT_H), CORNER_FILLET)
+    bore  = _fillet_vertical_corners(
+        _taper_section(rc_in_at(FLOOR_T), rc_in_at(POT_H + BOOL_OVERSHOOT), FLOOR_T, POT_H + BOOL_OVERSHOOT),
+        inner_fillet)
+    return outer.cut(bore)
+
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+def _angular_dist_deg(a: float, b: float) -> float:
+    """Smallest absolute angle between two bearings, in degrees."""
+    d = (a - b) % 360.0
+    return min(d, 360.0 - d)
+
+
+def _cut_many(body: cq.Workplane, cutters: list[cq.Workplane], chunk: int = 0,
+              label: str | None = None) -> cq.Workplane:
+    """Cut a long list of tool solids out of ``body``. By default (chunk ≤ 0) it
+    does this in ONE compound boolean against the clean body — which is ~13×
+    faster than batching, because every batch re-cuts the *accumulating* holey
+    solid (superlinear). One pass against the clean body has no accumulation, so
+    cutting thousands of disjoint hex holes is fast and OCCT handles it fine.
+    ``chunk`` > 0 forces batches (kept only as a fallback). clean=False: skip
+    cadquery's per-cut ShapeUpgrade — the single final heal() (build.py) does it.
+    """
+    n = len(cutters)
+    if chunk <= 0 or chunk >= n:
+        if label:
+            print(f"    {label}: cutting {n} holes in one pass...", flush=True)
+        return body.cut(compound(cutters), clean=False)
+    n_chunks = (n + chunk - 1) // chunk
+    for ci, i in enumerate(range(0, n, chunk), start=1):
+        body = body.cut(compound(cutters[i:i + chunk]), clean=False)
+        if label:
+            print(f"    {label}: chunk {ci}/{n_chunks}  ({min(i + chunk, n)}/{n} holes)", flush=True)
+    return body
+
+
+# ── 2. Wall vertical-slit perforation ───────────────────────────────────────
+
+def _wall_slit_cutters() -> list[cq.Workplane]:
+    """Staggered vertical slits over the perforation band. Each slit is a
+    plain radial box (SLIT_W wide tangentially, SLIT_H tall), rows offset by
+    half a column so no continuous vertical weakness line runs down the wall.
+    Same keep-out rules as the hex path (ribs, handles, drain channel)."""
+    if IS_POLY:
+        return _wall_slit_cutters_poly()
+    col_pitch = SLIT_COL_PITCH
+    row_pitch = SLIT_ROW_PITCH
+
+    span    = PERF_Z_HI - PERF_Z_LO
+    usable  = span - 2.0 * SLIT_HALF_H
+    n_rows  = max(1, int(usable // row_pitch) + 1)
+    z_first = PERF_Z_LO + SLIT_HALF_H
+
+    rib_keepout_deg    = math.degrees((RIB_W / 2.0 + SLIT_LIG + SLIT_HALF_W) / R_IN)
+    handle_keepout_deg = math.degrees((HANDLE_W / 2.0 + HANDLE_FRAME) / R_OUT)
+    handle_z_lo        = HANDLE_Z_LO - HANDLE_FRAME
+    handle_z_hi        = HANDLE_Z_HI + HANDLE_FRAME
+    chan_keepout_deg   = DRAIN_CHANNEL_KEEPOUT_DEG if DRAIN_CHANNEL else -1.0
+
+    base = slit_prism(SLIT_W, SLIT_H, RADIAL_CUT_LO, RADIAL_CUT_HI)
+    cutters: list[cq.Workplane] = []
+    for ri in range(n_rows):
+        z_c   = z_first + ri * row_pitch
+        z_top, z_bot = z_c + SLIT_HALF_H, z_c - SLIT_HALF_H
+        in_handle_band = (z_top > handle_z_lo) and (z_bot < handle_z_hi)
+        # Size THIS row's n_cols by its own local circumference (the mid-wall
+        # radius at this height) — so the tangential gap between slits meets
+        # SLIT_LIG at every height, not just the base. A tapered pot gets
+        # more slits per row as we rise, packed at the same ~SLIT_LIG spacing.
+        r_ref_row  = rc_out_at(z_c) - WALL_T / 2.0
+        n_cols     = max(6, round((2.0 * math.pi * r_ref_row) / col_pitch))
+        d_theta    = 360.0 / n_cols
+        shift = (d_theta / 2.0) if (ri % 2) else 0.0
+        for ci in range(n_cols):
+            theta = (ci * d_theta + shift) % 360.0
+            if any(_angular_dist_deg(theta, ra) < rib_keepout_deg for ra in RIB_ANGLES):
+                continue
+            if in_handle_band and any(_angular_dist_deg(theta, ha) < handle_keepout_deg
+                                      for ha in HANDLE_ANGLES):
+                continue
+            if DRAIN_CHANNEL and _angular_dist_deg(theta, DRAIN_CHANNEL_ANGLE) < chan_keepout_deg:
+                continue
+            cutters.append(base.translate((0.0, 0.0, z_c)).rotate((0, 0, 0), (0, 0, 1), theta))
+    return cutters
+
+
+def _wall_slit_cutters_poly() -> list[cq.Workplane]:
+    """Polygon wall slit perforation: same staggered layout, but each flat
+    face gets its own centred grid — clipped per-row to the local face width
+    at that height (so slits stay off the rounded corners)."""
+    col_pitch = SLIT_COL_PITCH
+    row_pitch = SLIT_ROW_PITCH
+
+    span    = PERF_Z_HI - PERF_Z_LO
+    usable  = span - 2.0 * SLIT_HALF_H
+    n_rows  = max(1, int(usable // row_pitch) + 1)
+    z_first = PERF_Z_LO + SLIT_HALF_H
+
+    corner_margin = CORNER_FILLET + SLIT_LIG + SLIT_HALF_W
+    def t_max_at(z):
+        return rc_out_at(z) * math.sin(math.pi / NUM_FACES) - corner_margin
+    n_cols = max(0, int(t_max_at(POT_H) / col_pitch) + 1)
+
+    base = slit_prism(SLIT_W, SLIT_H, apo_in_at(0.0) - BOOL_OVERSHOOT, apo_out_at(POT_H) + BOOL_OVERSHOOT)
+
+    rib_keep    = RIB_W / 2.0 + SLIT_LIG + SLIT_HALF_W
+    handle_keep = HANDLE_W / 2.0 + HANDLE_FRAME
+    chan_keep   = DRAIN_CHANNEL_TUBE_OR + SLIT_LIG + SLIT_HALF_W
+    handle_z_lo = HANDLE_Z_LO - HANDLE_FRAME
+    handle_z_hi = HANDLE_Z_HI + HANDLE_FRAME
+
+    cutters: list[cq.Workplane] = []
+    for phi in FACE_ANGLES:
+        has_handle = any(_angular_dist_deg(phi, ha) < 1.0 for ha in HANDLE_ANGLES)
+        has_rib    = any(_angular_dist_deg(phi, ra) < 1.0 for ra in RIB_ANGLES)
+        has_chan   = DRAIN_CHANNEL and _angular_dist_deg(phi, DRAIN_CHANNEL_ANGLE) < 1.0
+        for ri in range(n_rows):
+            z_c = z_first + ri * row_pitch
+            in_handle_band = (z_c + SLIT_HALF_H > handle_z_lo) and (z_c - SLIT_HALF_H < handle_z_hi)
+            shift = (col_pitch / 2.0) if (ri % 2) else 0.0
+            row_t_max = t_max_at(z_c)
+            for ci in range(-n_cols, n_cols + 1):
+                t = ci * col_pitch + shift
+                if abs(t) > row_t_max:
+                    continue
+                if has_rib and abs(t) < rib_keep:
+                    continue
+                if has_chan and abs(t) < chan_keep:
+                    continue
+                if has_handle and in_handle_band and abs(t) < handle_keep:
+                    continue
+                cutters.append(base.translate((0.0, t, z_c)).rotate((0, 0, 0), (0, 0, 1), phi))
+    return cutters
+
+
+# ── 3. Grab handles ──────────────────────────────────────────────────────────
+
+def _handle_cutters() -> list[cq.Workplane]:
+    """Each handle = a tangential row of HANDLE_FINGERS pointy-top hexagonal
+    finger holes. Built like the wall hex cutters (a radial slab per hole),
+    offset tangentially, then orbited to each handle angle."""
+    circ_r  = HANDLE_FINGER_AF / math.sqrt(3.0)
+    pitch   = HANDLE_FINGER_AF + HANDLE_FINGER_GAP
+    n       = HANDLE_FINGERS
+    offsets = [(i - (n - 1) / 2.0) * pitch for i in range(n)]      # centred tangential offsets
+    # Round wall: a deep radial slab (so edge holes clear the curve). Flat face:
+    # punch straight through the panel (no curvature to clear).
+    if IS_POLY:
+        finger = hex_prism(circ_r, apo_in_at(0.0) - BOOL_OVERSHOOT, apo_out_at(POT_H) + BOOL_OVERSHOOT)
+    else:
+        finger = hex_prism(circ_r, RADIAL_CUT_LO, RADIAL_CUT_HI)
+    cutters: list[cq.Workplane] = []
+    for a in HANDLE_ANGLES:
+        for off in offsets:
+            cutters.append(finger.translate((0.0, off, HANDLE_Z_MID)).rotate((0, 0, 0), (0, 0, 1), a))
+    return cutters
+
+
+# ── 4. Floor perforation (optional) ─────────────────────────────────────────
+
+def _floor_slit_cutters() -> list[cq.Workplane]:
+    """Concentric rings of RADIALLY-oriented rectangular slits (SLIT_W wide
+    tangentially, SLIT_H long radially, through the floor). Slits point
+    outward at each angular position, so a ring's material stays continuous
+    tangentially between slits — the disc's hoop stiffness (which resists
+    centre-sag under a full load of wet soil) is preserved. Each ring's slit
+    count is sized to its own local circumference so the tangential gap stays
+    ≈ SLIT_LIG at every radius. Rings are stagger-rotated so no radial seam
+    runs from centre to rim."""
+    z_lo, z_hi = -BOOL_OVERSHOOT, FLOOR_T + BOOL_OVERSHOOT
+    col_pitch  = SLIT_COL_PITCH
+    row_pitch  = SLIT_ROW_PITCH
+    clear      = FLOOR_PERF_FRAME + SLIT_HALF_H     # radial keep-out from ring rib / rim
+
+    rc_in_base = APO_IN_BASE / COS_HALF
+    r_outer_lim = (APO_IN_BASE if IS_POLY else rc_in_base) - clear
+    r_inner_lim = FLOOR_PERF_R_IN + SLIT_HALF_H
+
+    n_rings = max(0, int((r_outer_lim - r_inner_lim) // row_pitch) + 1)
+
+    spoke_step = 360.0 / FLOOR_SPOKE_COUNT if FLOOR_SPOKE_COUNT else 360.0
+    face_normals = [(math.cos(math.radians(a)), math.sin(math.radians(a))) for a in FACE_ANGLES]
+    apo_clip = APO_IN_BASE - clear
+
+    chan_x = chan_y = 0.0
+    chan_clear = -1.0
+    if DRAIN_CHANNEL:
+        ang_ch = math.radians(DRAIN_CHANNEL_ANGLE)
+        chan_x = DRAIN_CHANNEL_R_AXIS_BASE * math.cos(ang_ch)
+        chan_y = DRAIN_CHANNEL_R_AXIS_BASE * math.sin(ang_ch)
+        chan_clear = DRAIN_CHANNEL_TUBE_OR + clear
+
+    # Base slit — rectangular prism through the floor, centred at origin, long
+    # axis along +X (so after translate(r,0,0) it points radially outward from
+    # the pot centre). rotate() around Z spins it to any bearing.
+    base = (cq.Workplane("XY").workplane(offset=z_lo)
+            .rect(SLIT_H, SLIT_W).extrude(z_hi - z_lo))
+
+    cutters: list[cq.Workplane] = []
+    for ri in range(n_rings):
+        r = r_inner_lim + ri * row_pitch
+        if r > r_outer_lim:
+            break
+        # Whole ring vanishes if it sits on top of a ring rib.
+        if any(abs(r - rr) < clear for rr in FLOOR_RING_RADII):
+            continue
+        n_slits = max(4, round((2.0 * math.pi * r) / col_pitch))
+        d_ang   = 360.0 / n_slits
+        shift   = (d_ang / 2.0) if (ri % 2) else 0.0
+        for ci in range(n_slits):
+            ang = (ci * d_ang + shift) % 360.0
+            cx  = r * math.cos(math.radians(ang))
+            cy  = r * math.sin(math.radians(ang))
+            if IS_POLY and any(cx * nx + cy * ny > apo_clip for nx, ny in face_normals):
+                continue
+            if FLOOR_SPOKE_COUNT and r > FLOOR_SPOKE_R_IN:
+                m = (ang - FLOOR_SPOKE_OFFSET) % spoke_step
+                d_spoke = min(m, spoke_step - m)
+                if r * math.sin(math.radians(d_spoke)) < clear:
+                    continue
+            if chan_clear > 0 and math.hypot(cx - chan_x, cy - chan_y) < chan_clear:
+                continue
+            cutters.append(base.translate((r, 0.0, 0.0))
+                               .rotate((0, 0, 0), (0, 0, 1), ang))
+    return cutters
+
+
+# ── 5. Full-height vertical ribs ────────────────────────────────────────────
+
+def _vertical_ribs() -> list[cq.Workplane]:
+    """Internal ribs running floor → rim. Each is a radial blade from
+    (inner wall − RIB_PROJ) out into the wall, inset slightly from the OD so the
+    union doesn't bulge the outside. On a tapered pot the inner wall slopes, so
+    the blade is a tapered trapezoid that tracks it (otherwise it would either
+    poke out at the base or fall short of the wall at the top). Two ribs sit
+    behind the handle openings — that's the lift load path."""
+    zlo, zhi = RIB_Z_LO, RIB_Z_HI
+    if not IS_TAPER:
+        r_lo  = (APO_IN if IS_POLY else R_IN) - RIB_PROJ
+        r_hi  = (APO_OUT if IS_POLY else R_OUT) - 0.5     # inset from the wall so the union doesn't bulge it
+        blade = (
+            cq.Workplane("XY").workplane(offset=zlo)
+            .center((r_lo + r_hi) / 2.0, 0.0)
+            .box(r_hi - r_lo, RIB_W, zhi - zlo, centered=(True, True, False))
+        )
+    else:
+        # Trapezoid in the X(radial)–Z(height) plane, given thickness RIB_W in Y.
+        pts = [
+            (apo_in_at(zlo) - RIB_PROJ, zlo),
+            (apo_out_at(zlo) - 0.5,     zlo),
+            (apo_out_at(zhi) - 0.5,     zhi),
+            (apo_in_at(zhi) - RIB_PROJ, zhi),
+        ]
+        blade = cq.Workplane("XZ").polyline(pts).close().extrude(RIB_W / 2.0, both=True)
+    return [blade.rotate((0, 0, 0), (0, 0, 1), a) for a in RIB_ANGLES]
+
+
+# ── 6. Floor stiffening ribs (soil side) ────────────────────────────────────
+
+def _floor_ribs() -> cq.Workplane:
+    """A waffle on top of the 2 mm floor: FLOOR_SPOKE_COUNT radial blades plus
+    the concentric ring blades in FLOOR_RING_RADII. Sits inside the pot so the
+    floor itself still prints as one clean disc on the bed."""
+    parts: list[cq.Workplane] = []
+
+    r_in = FLOOR_SPOKE_R_IN                                 # innermost ring out to the wall
+    z_top = FLOOR_T + FLOOR_RIB_H                            # top of the floor ribs
+
+    def _inner_wall_r(ang_deg: float, z: float) -> float:
+        """Inner-wall distance from centre along this bearing, at height z. For a
+        polygon a corner spoke must reach further than a face spoke (the corner
+        is further out): apothem / cos(angle off the nearest face normal). On a
+        tapered pot the wall also moves out with z."""
+        if not IS_POLY:
+            return rc_in_at(z)
+        d = min(_angular_dist_deg(ang_deg, f) for f in FACE_ANGLES)
+        return apo_in_at(z) / math.cos(math.radians(d))
+
+    # A spoke that lands on the drain channel would run into the pipe's floor
+    # bore; that one stops just short of the bore instead (still a brace, no
+    # obstruction to the hose). The bore is at the *base* axis (it's cut through
+    # the floor), so truncate to that — not the top axis, which on a tapered pot
+    # sits further out and would let the spoke reach into the hole.
+    r_out_chan = (max(r_in + FLOOR_RIB_T, DRAIN_CHANNEL_R_AXIS_BASE - DRAIN_CHANNEL_FLOOR_BORE_R)
+                  if DRAIN_CHANNEL else None)
+    for ang in FLOOR_SPOKE_ANGLES:
+        is_chan = DRAIN_CHANNEL and _angular_dist_deg(ang, DRAIN_CHANNEL_ANGLE) < 1.0
+        if is_chan:
+            # Truncated stub short of the bore — never reaches the wall, so a
+            # plain vertical box is fine.
+            spoke = (
+                cq.Workplane("XY").workplane(offset=FLOOR_T)
+                .center((r_in + r_out_chan) / 2.0, 0.0)
+                .box(r_out_chan - r_in, FLOOR_RIB_T, FLOOR_RIB_H, centered=(True, True, False))
+            )
+        elif IS_TAPER:
+            # The wall slopes outward over the rib's height, so the spoke's outer
+            # edge must slope to stay embedded in it (a vertical box gaps off the
+            # wall above the floor). Reach ~half a wall into it at each height.
+            ro_b = _inner_wall_r(ang, FLOOR_T) + WALL_T / 2.0
+            ro_t = _inner_wall_r(ang, z_top)  + WALL_T / 2.0
+            pts = [(r_in, FLOOR_T), (ro_b, FLOOR_T), (ro_t, z_top), (r_in, z_top)]
+            spoke = cq.Workplane("XZ").polyline(pts).close().extrude(FLOOR_RIB_T / 2.0, both=True)
+        else:
+            ro = _inner_wall_r(ang, FLOOR_T)
+            spoke = (
+                cq.Workplane("XY").workplane(offset=FLOOR_T)
+                .center((r_in + ro) / 2.0, 0.0)
+                .box(ro - r_in, FLOOR_RIB_T, FLOOR_RIB_H, centered=(True, True, False))
+            )
+        parts.append(spoke.rotate((0, 0, 0), (0, 0, 1), ang))
+
+    for rr in FLOOR_RING_RADII:
+        parts.append(tube(2.0 * rr + FLOOR_RIB_T, 2.0 * rr - FLOOR_RIB_T, FLOOR_RIB_H, z=FLOOR_T))
+
+    return compound(parts)
+
+
+# ── 7. Optional drainage round-holes ────────────────────────────────────────
+
+def _drain_cutters() -> list[cq.Workplane]:
+    """A centre hole plus a ring of round holes through the floor, placed in
+    the gaps between the floor ribs."""
+    z0 = -BOOL_OVERSHOOT
+    h  = FLOOR_T + 2.0 * BOOL_OVERSHOOT
+    cutters = [cyl(DRAIN_HOLE_D, h, z=z0)]                  # centre
+    half_gap = FLOOR_SPOKE_OFFSET + 360.0 / FLOOR_SPOKE_COUNT / 2.0   # midway between adjacent spokes
+    for i in range(DRAIN_RING_N):
+        theta = math.radians(half_gap + i * 360.0 / DRAIN_RING_N)
+        cutters.append(
+            cyl(DRAIN_HOLE_D, h, z=z0).translate(
+                (DRAIN_RING_R * math.cos(theta), DRAIN_RING_R * math.sin(theta), 0.0)
+            )
+        )
+    return cutters
+
+
+# ── 7. Drain-hose channel / pipe (optional) ─────────────────────────────────
+
+def _drain_channel_floor_bore_and_pipe() -> tuple[cq.Workplane, cq.Workplane]:
+    """Returns (floor_bore, pipe) for the drain channel:
+      floor_bore — a short vertical cylinder of radius DRAIN_CHANNEL_FLOOR_BORE_R
+                   at the groove axis, z ∈ [-overshoot, FLOOR_T + overshoot]:
+                   the hole through the floor so the hose can reach the
+                   reservoir below.
+      pipe       — a full 360° annular tube (radii [R_CH, TUBE_OR]) at the
+                   groove axis, z ∈ [0, POT_H]; its bore is the hose channel,
+                   and a band of its outer surface overlaps the existing wall
+                   (so the whole thing stays one connected solid).
+    The caller does ``body.cut(floor_bore).union(pipe)`` (cut first, so the
+    pipe's inner band cleanly refills the floor hole's outer ring) and then
+    perforates the pipe wall."""
+    r_ch     = DRAIN_CHANNEL_R_CH
+    tube_or  = DRAIN_CHANNEL_TUBE_OR
+    bore_r   = DRAIN_CHANNEL_FLOOR_BORE_R
+    a        = DRAIN_CHANNEL_ANGLE
+    R_base   = DRAIN_CHANNEL_R_AXIS_BASE   # axis distance from centre at the floor
+    R_top    = DRAIN_CHANNEL_R_AXIS_TOP    # ...and at the rim
+
+    # The floor bore sits at the base end of the (possibly slanted) pipe axis.
+    floor_bore = (cyl(2.0 * bore_r, FLOOR_T + 2.0 * BOOL_OVERSHOOT, z=-BOOL_OVERSHOOT)
+                  .translate((R_base, 0.0, 0.0))
+                  .rotate((0, 0, 0), (0, 0, 1), a))
+
+    if not IS_TAPER:
+        # Straight wall — a plain vertical tube (capped at the pot's z extents).
+        pipe = (tube(2.0 * tube_or, 2.0 * r_ch, POT_H, z=0.0)
+                .translate((R_base, 0.0, 0.0))
+                .rotate((0, 0, 0), (0, 0, 1), a))
+        return floor_bore, pipe
+
+    # Tapered wall — an oblique tube whose axis runs from R_base (floor) to R_top
+    # (rim), so it stays merged into the sloping wall at constant recess. Build
+    # by lofting the outer circles and subtracting a (slightly over-long) lofted
+    # bore so the through-hole is clean at both ends.
+    def axis_x(z):
+        return R_base + (R_top - R_base) * (z / POT_H)
+    def oblique_cyl(radius, z0, z1):
+        x0, x1 = axis_x(z0), axis_x(z1)
+        return (cq.Workplane("XY").workplane(offset=z0).center(x0, 0.0).circle(radius)
+                .workplane(offset=z1 - z0).center(x1 - x0, 0.0).circle(radius)
+                .loft(ruled=True))
+    pipe = oblique_cyl(tube_or, 0.0, POT_H).cut(
+        oblique_cyl(r_ch, -BOOL_OVERSHOOT, POT_H + BOOL_OVERSHOOT))
+    pipe = pipe.rotate((0, 0, 0), (0, 0, 1), a)
+    return floor_bore, pipe
+
+
+def _channel_pipe_slit_cutters() -> list[cq.Workplane]:
+    """Vertical-slit perforation for the drain-channel pipe wall — same
+    SLIT_W / SLIT_H / SLIT_LIG geometry as the main wall, but oriented
+    *radially from the groove axis* (the pipe is a thin cylindrical wall
+    around that axis, not around the pot centre, so the main-wall cutters
+    can't perforate it cleanly).
+
+    Only the *inward-facing* arc of the pipe is perforated (a hole on the
+    outward side would just open the bore to the inter-pot gap, not the soil;
+    the outward arc is also where the pipe merges into the wall, so leaving it
+    solid keeps that joint clean). The vertical range goes down to the floor
+    (z = FLOOR_T) — water needs a path in/out at the bottom of the soil column
+    — and up to POT_H (above the soil line, just cosmetic)."""
+    if not DRAIN_CHANNEL:
+        return []
+
+    r_ch    = DRAIN_CHANNEL_R_CH
+    tube_or = DRAIN_CHANNEL_TUBE_OR
+    R_base  = DRAIN_CHANNEL_R_AXIS_BASE
+    R_top   = DRAIN_CHANNEL_R_AXIS_TOP
+    def axis_x(z):                                          # groove-axis distance from centre at height z
+        return R_base + (R_top - R_base) * (z / POT_H)
+    r_mid   = (r_ch + tube_or) / 2.0                         # pipe mid-wall radius (about the groove axis)
+
+    col_pitch  = SLIT_COL_PITCH
+    n_cols     = max(3, round((math.pi * 2.0 * r_mid) / col_pitch))
+    d_phi      = 360.0 / n_cols
+    row_pitch  = SLIT_ROW_PITCH
+    half_h     = SLIT_HALF_H
+    solid_half = DRAIN_CHANNEL_PERF_SOLID_HALF_DEG           # outward arc that stays solid (centred on phi_local = 0)
+
+    z_lo, z_hi = FLOOR_T, POT_H
+    span    = z_hi - z_lo
+    usable  = span - 2.0 * half_h
+    n_rows  = max(1, int(usable // row_pitch) + 1)
+    z_first = z_lo + half_h + (usable - (n_rows - 1) * row_pitch) / 2.0
+
+    # If a floor spoke butts into the pipe (it lands on DRAIN_CHANNEL_ANGLE and
+    # _floor_ribs() truncated it to do so), keep the patch of pipe wall where it
+    # attaches solid — the spoke arrives on the inward side (phi_local ≈ 180°),
+    # right at the floor — so drop the slits there. (The user wants the spoke
+    # flush against solid material, not running into a hole.)
+    if FLOOR_SPOKE_COUNT:
+        _spoke_step = 360.0 / FLOOR_SPOKE_COUNT
+        spoke_on_channel = any(_angular_dist_deg(i * _spoke_step, DRAIN_CHANNEL_ANGLE) < 1.0
+                               for i in range(FLOOR_SPOKE_COUNT))
+    else:
+        spoke_on_channel = False        # no spokes (light mode) → nothing butts into the pipe
+    z_clear   = FLOOR_T + FLOOR_RIB_H + half_h          # rows whose slits could reach the spoke
+
+    # Radial range of the cutter (from the groove axis): from just inside the
+    # pipe bore to just outside the pipe OD, so the flat cutter punches through
+    # the whole wall thickness.
+    radial_lo = r_ch - 1.0
+    radial_hi = tube_or + 1.0
+    base = slit_prism(SLIT_W, SLIT_H, radial_lo, radial_hi)
+
+    # phi_local is measured from the +x (outward, toward-OD) direction in the
+    # pipe's pre-rotation frame; the inward (soil) side is around phi_local = 180°.
+    cutters: list[cq.Workplane] = []
+    for ri in range(n_rows):
+        z_c   = z_first + ri * row_pitch
+        shift = (d_phi / 2.0) if (ri % 2) else 0.0           # honeycomb stagger
+        for ci in range(n_cols):
+            phi_local = (shift + ci * d_phi) % 360.0
+            if min(phi_local, 360.0 - phi_local) < solid_half:    # in the solid outward arc — skip
+                continue
+            if spoke_on_channel and z_c < z_clear and _angular_dist_deg(phi_local, 180.0) < 0.75 * d_phi:
+                continue                                          # leave solid where the floor spoke attaches
+            cutters.append(
+                base
+                .translate((0.0, 0.0, z_c))
+                .rotate((0.0, 0.0, 0.0), (0.0, 0.0, 1.0), phi_local)   # orient radial from the groove axis
+                .translate((axis_x(z_c), 0.0, 0.0))                     # to the (slanted) groove axis at this height
+                .rotate((0.0, 0.0, 0.0), (0.0, 0.0, 1.0), DRAIN_CHANNEL_ANGLE)
+            )
+    return cutters
+
+
+# ── Assembly ─────────────────────────────────────────────────────────────────
+
+def _build_pot() -> cq.Workplane:
+    import time as _t
+    def _step(label, fn):
+        print(f"  [{label}] ...", flush=True)
+        t0 = _t.time()
+        r = fn()
+        print(f"  [{label}] done in {_t.time() - t0:.1f}s", flush=True)
+        return r
+
+    # A tapered ROUND wall is an analytic cone. Cutting the perforation straight
+    # into it — and unioning ribs onto the result — is pathologically slow: not
+    # because cone booleans are slow, but because each hex hole leaves messy
+    # conic edge curves and the solid's complexity snowballs over the thousands
+    # of sequential operations. So for the cone we split the work:
+    #   • perforate a plain solid *cylinder* (clean cylinder-plane edges, fast);
+    #   • assemble everything additive (cone shell + drain pipe + ribs) on the
+    #     *simple* cone, with no holes yet;
+    #   • carve the perforation into the whole assembly with ONE intersection.
+    # The cone sits entirely inside the cylinder, ribs/pipe live in the
+    # perforation keep-outs, so the intersection keeps them intact.
+    # (A faceted taper has planar faces — clean edges — so it cuts in place fine,
+    # like the straight polygon, and takes the normal path below.)
+    if IS_TAPER and not IS_POLY:
+        return _build_cone_pot(_step)
+
+    body = _step("shell", _shell)
+    body = _step("wall-perf", lambda: _cut_many(body, _wall_slit_cutters(), label="wall-slits"))
+    if HANDLE_ANGLES:
+        body = _step("handles", lambda: body.cut(compound(_handle_cutters()), clean=False))
+    if FLOOR_PERF:
+        body = _step("floor-perf", lambda: _cut_many(body, _floor_slit_cutters(), label="floor-slits"))
+
+    if RIB_ANGLES:
+        body = _step("vert-ribs", lambda: body.union(compound(_vertical_ribs()), clean=False))
+    if FLOOR_SPOKE_ANGLES or FLOOR_RING_RADII:
+        body = _step("floor-ribs", lambda: body.union(_floor_ribs(), clean=False))
+
+    if DRAIN_CHANNEL:
+        # Ribs are already unioned above, so cutting the bore here clears the
+        # floor and any rib crossing it; the pipe then merges on top.
+        floor_bore, pipe = _drain_channel_floor_bore_and_pipe()
+        body = _step("drain-merge", lambda: body.cut(floor_bore, clean=False).union(pipe, clean=False))
+        body = _step("pipe-perf", lambda: _cut_many(body, _channel_pipe_slit_cutters(), label="pipe-perf"))
+
+    if DRAINAGE:
+        body = body.cut(compound(_drain_cutters()))
+    return body
+
+
+def _build_cone_pot(_step) -> cq.Workplane:
+    """Tapered-round assembly: perforate a cylinder proxy, build the additive
+    parts on the plain cone, then carve with one intersection (see _build_pot)."""
+    # 1. Perforate a solid cylinder proxy (fast — clean edges).
+    proxy = cyl(2.0 * (R_TOP + 1.0), POT_H, z=0.0)
+    proxy = _step("proxy wall-perf", lambda: _cut_many(proxy, _wall_slit_cutters(), label="wall-slits"))
+    if HANDLE_ANGLES:
+        proxy = _step("proxy handles", lambda: proxy.cut(compound(_handle_cutters()), clean=False))
+    if FLOOR_PERF:
+        proxy = _step("proxy floor-perf", lambda: _cut_many(proxy, _floor_slit_cutters(), label="floor-slits"))
+
+    # 2. Assemble the additive parts on the plain cone shell (no holes → fast).
+    #    Pipe stays SOLID here — perforating it before the cone-intersect
+    #    creates tiny face fragments that make OCCT's intersection pathological
+    #    (60+ minutes and no progress). We cut the pipe slits AFTER the
+    #    intersect instead, as a cheap separate cut.
+    floor_bore = None
+    add = _shell()
+    if DRAIN_CHANNEL:
+        floor_bore, pipe = _drain_channel_floor_bore_and_pipe()
+        add = add.union(pipe, clean=False)
+    def _add_ribs(a):
+        if RIB_ANGLES:
+            a = a.union(compound(_vertical_ribs()), clean=False)
+        if FLOOR_SPOKE_ANGLES or FLOOR_RING_RADII:
+            a = a.union(_floor_ribs(), clean=False)
+        return a
+    add = _step("additive (cone+pipe+ribs)", lambda: _add_ribs(add))
+
+    # 3. One intersection carves the wall + floor perforation into the whole assembly.
+    body = _step("cone-intersect", lambda: add.intersect(proxy, clean=False))
+
+    # 4. Perforate the pipe wall (deferred from step 2 — see above).
+    if DRAIN_CHANNEL:
+        body = _step("pipe-perf", lambda: _cut_many(body, _channel_pipe_slit_cutters(), label="pipe-slits"))
+
+    # 5. Bore the floor LAST — clears the floor, the pipe base and any floor rib
+    #    crossing it (the cut is one small cylinder, so it's cheap even here).
+    if DRAIN_CHANNEL:
+        body = _step("floor-bore", lambda: body.cut(floor_bore, clean=False))
+
+    if DRAINAGE:
+        body = body.cut(compound(_drain_cutters()))
+    return body
+
+
+def _build_outer_pot() -> cq.Workplane:
+    """Plain solid cachepot the inner pot drops into — no holes, ribs, handles
+    or drain pipe. Per-side offset from the inner's outer surface is WALL_T (the
+    outer's wall thickness) + 3 mm (clearance gap). Total OD increase is
+    therefore 2·WALL_T + 6 mm. Height is set to cover the perforation band: the
+    cavity reaches from the outer's interior floor up to PERF_TOP_Z + 5 mm
+    safety margin, so the inner rests on the outer's floor and its highest holes
+    are still ~5 mm below the outer's rim."""
+    OUTER_PERF_COVER = 5.0                                  # safety margin above top of highest hole
+    h_out  = PERF_TOP_Z + OUTER_PERF_COVER + FLOOR_T        # total outer height
+    OFFSET = WALL_T + 3.0                                   # per-side offset from inner pot outer
+    bore_h = h_out - FLOOR_T + BOOL_OVERSHOOT
+    inner_fillet = max(0.0, CORNER_FILLET - WALL_T)
+
+    # Outer pot's outer circumradius: inner's R at that height + OFFSET.
+    R_out_base = R_BASE + OFFSET
+    R_out_top  = (R_BASE + (R_TOP - R_BASE) * h_out / POT_H) + OFFSET
+    R_in_base  = R_out_base - WALL_T                        # cavity (bore) circumradius
+    R_in_top   = R_out_top  - WALL_T
+
+    print(f"  [outer pot] OD base {2*R_out_base:.1f} mm, OD top {2*R_out_top:.1f} mm, height {h_out:.1f} mm", flush=True)
+
+    if not IS_TAPER:
+        if not IS_POLY:
+            outer = cyl(2 * R_out_base, h_out, z=0.0)
+            bore  = cyl(2 * R_in_base, bore_h, z=FLOOR_T)
+        else:
+            outer = poly_prism(R_out_base, NUM_FACES, h_out, z=0.0, fillet=CORNER_FILLET)
+            bore  = poly_prism(R_in_base, NUM_FACES, bore_h, z=FLOOR_T, fillet=inner_fillet)
+        return outer.cut(bore, clean=False)
+
+    # Tapered — both walls follow the inner pot's draft, offset by OFFSET (outer)
+    # and OFFSET − WALL_T (inner bore).
+    outer = _fillet_vertical_corners(_taper_section(R_out_base, R_out_top, 0.0, h_out), CORNER_FILLET)
+    slope = (R_in_top - R_in_base) / h_out                  # bore radius vs z
+    bore = _fillet_vertical_corners(
+        _taper_section(R_in_base + slope * FLOOR_T,
+                       R_in_base + slope * (h_out + BOOL_OVERSHOOT),
+                       FLOOR_T, h_out + BOOL_OVERSHOOT),
+        inner_fillet)
+    return outer.cut(bore, clean=False)
+
+
+# Skip the (slow) build when only the helper functions are wanted (timing / tests).
+# Both inner and outer are built every time — the outer is a few seconds (no
+# perforation), trivial next to the inner build.
+if os.environ.get("POT_NOBUILD") == "1":
+    pot = None
+    outer_pot = None
+else:
+    pot = _build_pot()
+    outer_pot = _build_outer_pot()
