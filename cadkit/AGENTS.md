@@ -258,6 +258,124 @@ the bare solid, for fusing into a larger cut. They take a direction **vector**
 mouth face; `overshoot=` extends the cutter backwards out of the material to dodge
 coincident-face booleans without moving any real feature.
 
+## Minimum material — count it in whole beads
+Design printed material as an **integer number of nozzle beads.** The projects
+slice with a variable-width wall generator (**Arachne**), which fills exact nozzle
+multiples cleanly — so there is **NO buffer.** (An earlier `nozzle + 0.05` pad
+guarded against classic generators dropping exactly-one-nozzle lines; retired once
+everything moved to Arachne — user's call 2026-07-22. If you see `0.85`/`+0.05`
+anywhere, it's a leftover to clear.)
+
+**One bead is the hard floor; two beads (`2 × nozzle`) is the QUALITY TARGET** — a
+lone bead slices a bit mushy, two clean perimeters print crisp. **Prefer two beads**
+on anything load- or seal-bearing; drop to one only in a genuinely tight room.
+
+`cadkit.printing` owns the rule — never hard-code `0.8`/`1.6`:
+```python
+from cadkit.printing import min_wall
+NOZZLE_D    = 0.8                        # set ONCE per project (this repo runs 0.8)
+MIN_WALL    = min_wall(NOZZLE_D)         # 0.8 — one-bead HARD floor
+MIN_WALL_2P = min_wall(NOZZLE_D, beads=2)   # 1.6 — two-bead quality target (prefer this)
+```
+### The bead GRID — every length, not just the thin ones
+
+`min_wall` answers *"how thin may this get?"*. That leaves the middle of the
+range unmanaged, and that is where the slicer starts improvising. The rule is
+bigger than the floor:
+
+> **Every printed length is either `N × BEAD`, or another feature `± N × BEAD`.**
+
+A 1.75 mm wall clears a 1.6 floor and is **2.19 beads.** Arachne cannot lay 2.19
+beads — it stretches two to 0.875 each, or squeezes in a starved third. Harmless
+on a cosmetic face; on a load-bearing ledge that improvised bead is exactly where
+the part delaminates, and *you* did not choose it. On the grid, the extruded part
+is the part you drew.
+
+The `± N beads` half carries as much weight as the multiples: derived constants
+then land on the grid **for free**, so an off-grid *derived* value means one of
+its parents is off-grid — which is the bug worth chasing.
+
+```python
+from cadkit.printing import beads, on_grid, snap
+beads(3, 0.8)              # 2.4  — the ruler (no floor; 0 beads is legal)
+on_grid(1.75, 0.8)         # False — 2.19 beads
+snap(1.75, 0.8, "up")      # 2.4  — load-bearing rounds UP; 'down' for clearance pockets
+```
+
+**Three kinds of length are legitimately off-grid** — each for a reason about the
+world, and each needing that reason written down, because a bare off-grid number
+is indistinguishable from an oversight:
+
+- **hardware** — a dummy modelling a REAL object. A NEMA17 is 42.3 mm whether or
+  not that suits your nozzle. Rounding it doesn't print better, it makes the
+  model **lie about what has to fit**. Model it true; put the *printed material
+  around it* on the grid. (A soft spec — a coil's free length, a cut rod — may be
+  rounded to a bead for convenience; that's a choice, so say so.)
+- **clearance** — a slip fit is 0.25 mm by necessity and is always sub-bead.
+  Clearances are **gaps, not material**: no bead is laid across one, so the grid
+  has nothing to say. The only exemption needing no per-case justification.
+- **domain** — scale length, string pitch, a mounting standard. The printer
+  doesn't get a vote.
+
+Anything else off-grid is an oversight. Enforce it with **`cadkit.bead_check`**,
+the shared audit engine (bare literals checked by VALUE, derived constants by
+the OFFSETS they add — the result may sit anywhere, it inherits its datum).
+Each project ships a thin `tools/check_beads.py` driver supplying its constants
+package and an exemption table keyed by name, every entry carrying its reason;
+non-zero exit for off-grid values that have none (the overlap-gate pattern; the
+pedal-steel's is the reference driver). Counts (`N_*`), angles (`*_DEG`,
+`THROW*`) and `n × BEAD` coefficients are skipped automatically.
+
+**The grid governs DIFFERENCES, not positions.** The printer quantises one
+thing only: the distance between opposing surfaces that bound material.
+Positions are continuous — no lattice, and the slicer prints a perfect circle;
+the grid is a worst-case guarantee about thin-wall fill, not a voxel model. So:
+**snap where free, chain where coupled** — an isolated feature goes on the
+absolute grid (`70 × BEAD`, and always written as a count, never `56.0`); a
+feature sharing material with an off-grid datum (hardware, scale length) is
+sized `datum ± N × BEAD` so the *web between them* is what lands on-grid.
+Snapping it absolutely instead moves the remainder onto the load-bearing web.
+**Joinery: fit beats grid** — a tenon is `mortise − clearance`, sub-bead by
+necessity, so one side is off-grid *by construction*; put the nominal profile
+on the grid and the whole clearance on ONE side (cadkit.joinery: the tenon).
+Parts print separately — their frames share no grid at print time.
+
+What a full audit actually finds (pedal-steel, 264 findings → 0): mostly not
+walls but **stale spelled datums** — literal copies of a chain whose parents
+had since snapped, each silently wrong by a fraction of a bead. Fix by
+referencing the live datum (or, where import direction forbids, spelling it
+via the same shared constants and saying so). And expect a few constants that
+**cannot** snap because a model assert pins them at a limit — those are tuned
+knobs: exempt them citing the assert, don't fight it.
+
+**The grid is a property of the PART, not the project.** A project sets a default
+nozzle because most of it is structure, but a part whose detail is finer than a
+bead can resolve gets a finer nozzle *and a finer grid*. The pedal-steel's belt
+splice clamp is the case: GT2 ridges at a 2.0 mm tooth pitch, 0.75 mm tall — a
+0.8 bead cannot resolve that (one bead per tooth *is* the tooth, so the ridges
+smear and the mesh that stops the splice slipping stops existing). It declares
+its own `NOZZLE_D = 0.2` and is graded against 0.2.
+
+Mating across two grids is safe in **one direction**: a coarse length is always a
+whole number of fine beads (0.8 = two 0.4s), but not the reverse. So a face
+**shared** between a 0.8 part and a 0.4 part must sit on the **coarser** grid —
+size shared features from the coarse part and let the fine part inherit them.
+
+**Round the way the feature fails.** Load-bearing or sealing → snap **up** (cost:
+a little material; risk avoided: a crack). Clearance-side pocket or cosmetic
+relief → down or nearest. And when a snap would move a **mating** face, move the
+mate with it — otherwise you've traded a slicer problem for a fit problem. That
+is exactly why the rule reads *"another feature ± N beads"* and not *"round every
+number independently"*.
+
+Size features from these (e.g. a boss ceiling over a cross-bore = `axis_z + bore_r
++ MIN_WALL_2P`). Same rule lives in `joinery._bead`/`_bead_pref` and
+`contact.contact_rib_size`. It bites hardest at **hidden** thin spots — a boss
+ceiling over a horizontal set-screw bore, a web between two pockets — where the
+nominal numbers look fine but the finished solid is a razor. The overlap gate
+does NOT catch thin material (see its caveats), so **verify these on the real
+solid** with a point-probe / cross-section, not on paper.
+
 ## Don't
 - Don't re-add Onshape (push scripts, credentials, `_push_onshape`) — removed on
   purpose.
