@@ -3,3 +3,8 @@
 __pycache__/
 *.pyc
 tools/build_counter.txt
+
+# my-pots/: exclude every STEP by default; whitelist only the committed set.
+my-pots/*
+!my-pots/medium_round_inner_pot.step
+!my-pots/medium_round_outer_pot.step

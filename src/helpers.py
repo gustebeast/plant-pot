@@ -84,6 +84,30 @@ def hex_prism(circ_r: float, x_lo: float, x_hi: float) -> cq.Workplane:
     )
 
 
+def _gable_pts(af: float, side_h: float) -> list[tuple[float, float]]:
+    """Vertices of a pointy-top *gabled* hexagon: vertical side walls of length
+    ``side_h`` at ±af/2, capped top and bottom by 45° peaks (height af/2 each).
+    Returned as (across-flats axis, pointy axis) so the roof points along ±
+    the second coordinate. Total extent: af wide × (side_h + af) tall."""
+    h = side_h / 2.0
+    a = af / 2.0
+    return [(a, h), (0.0, h + a), (-a, h), (-a, -h), (0.0, -(h + a)), (a, -h)]
+
+
+def gable_prism(af: float, side_h: float, x_lo: float, x_hi: float) -> cq.Workplane:
+    """Gabled-hexagon prism in the YZ plane (across-flats along Y, pointy 45°
+    caps along ±Z), extruded radially over x ∈ [x_lo, x_hi]. The 45° top cap
+    keeps the hole's top edge at a printable overhang — a regular hex's
+    30°-off-horizontal roof is too steep on a flared wall. Translate in z and
+    rotate about Z to place around the wall."""
+    return (
+        cq.Workplane("YZ")
+        .polyline(_gable_pts(af, side_h)).close()
+        .extrude(x_hi - x_lo)
+        .translate((x_lo, 0.0, 0.0))
+    )
+
+
 def slit_prism(width: float, height: float, x_lo: float, x_hi: float) -> cq.Workplane:
     """Rectangular vertical-slit prism: tangential ``width`` along Y, vertical
     ``height`` along Z, extruded radially over x ∈ [x_lo, x_hi]. Built centred

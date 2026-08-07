@@ -45,13 +45,19 @@ from . import dimensions as d
 from .helpers import heal
 from . import pot as _pot_mod
 
-pot       = heal(_pot_mod.pot)
-outer_pot = heal(_pot_mod.outer_pot)
+# Under POT_NOBUILD (set inside pot.py before spawning multiprocessing
+# workers), the two module-level builds in pot.py return None — skip the
+# heal so the worker's import of build.py doesn't crash on None.val().
+if os.environ.get("POT_NOBUILD") == "1":
+    pot = outer_pot = None
+else:
+    pot       = heal(_pot_mod.pot)
+    outer_pot = heal(_pot_mod.outer_pot)
 
 _SHAPE_NOTE = f"{d.NUM_FACES}-sided" if d.IS_POLY else "round"
 _OD_NOTE = (f"Ø{d.POT_OD_BASE:.0f}-{d.POT_OD_TOP:.0f}" if d.IS_TAPER else f"Ø{d.POT_OD:.0f}")
 
-_handles_note = (f"{d.HANDLE_COUNT} grab handles ({d.HANDLE_FINGERS} hex finger holes each)"
+_handles_note = (f"{d.HANDLE_COUNT} grab handles ({d.HANDLE_FINGERS} gable finger holes each)"
                  if d.HANDLE_COUNT else "no handles")
 _ribs_note    = (f"{d.RIB_COUNT} internal ribs" if d.RIB_COUNT else "no internal ribs")
 _floor_note   = ("ribbed floor" if (d.FLOOR_SPOKE_COUNT or d.FLOOR_RING_COUNT) else "plain floor")
@@ -62,7 +68,8 @@ _INNER_NOTE = (
     f"vertical-slit wall + radial-slit floor perforation, "
     f"{_handles_note}, {_ribs_note}, {_floor_note}. Print in PETG, no supports."
 )
-_outer_h = d.PERF_TOP_Z + 5.0 + d.FLOOR_T   # mirrors _build_outer_pot()
+_OUTER_FLOOR_GAP = 3.0   # matches _build_outer_pot(); floor clearance in the assembly
+_outer_h = d.PERF_TOP_Z + 5.0 + d.FLOOR_T + d.FLOOR_T + _OUTER_FLOOR_GAP   # mirrors _build_outer_pot()
 _outer_od_base = d.POT_OD_BASE + 2.0 * d.WALL_T + 6.0
 _outer_od_top  = ((d.POT_OD_BASE + (d.POT_OD_TOP - d.POT_OD_BASE) * _outer_h / d.POT_H)
                   + 2.0 * d.WALL_T + 6.0)
@@ -145,9 +152,15 @@ def _export_assembly() -> None:
     cachepot, saved as assembly.step for the shared FreeCAD viewer — each part
     stays individually show/hide-able."""
     build_n = _bump_build_counter()
+    # Shift outer DOWN by (FLOOR_T + gap) so the inner-pot floor sits
+    # `_OUTER_FLOOR_GAP` above the outer's cavity floor (matches the per-side
+    # wall clearance). The exported STEP for the outer part is UN-shifted —
+    # this shift only affects the combined assembly view.
+    _outer_z = -(d.FLOOR_T + _OUTER_FLOOR_GAP)
     asm = (cq.Assembly(name="plant_pot")
            .add(pot,       name="inner_pot", color=color(COLOR["inner_pot"]))
-           .add(outer_pot, name="outer_pot", color=color(COLOR["outer_pot"])))
+           .add(outer_pot, name="outer_pot", color=color(COLOR["outer_pot"]),
+                loc=cq.Location((0, 0, _outer_z))))
     counter = _build_counter_model(build_n)
     if counter is not None:
         asm.add(counter, name="build_counter", color=color(COLOR["build_counter"]))
@@ -182,4 +195,12 @@ def main() -> None:
     _export_assembly()
 
 
-main()
+# Guard the top-level main() call so `multiprocessing` on Windows (spawn
+# semantics) can safely re-import `src.build` inside worker subprocesses.
+# Windows spawn re-executes `-m src.build`, so `__name__ == "__main__"` is
+# TRUE in the worker too — the env var is the worker-vs-real-invocation
+# signal. The parallel-intersect path in pot.py sets POT_NOBUILD=1 in
+# `os.environ` before spawning, so workers skip both the geometry build
+# (pot.py) and the export/assembly (this file).
+if __name__ == "__main__" and os.environ.get("POT_NOBUILD") != "1":
+    main()

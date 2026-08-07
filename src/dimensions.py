@@ -149,14 +149,9 @@ def _snap_to_face(angle: float) -> float:
     return min(FACE_ANGLES, key=lambda f: _ang_dist_deg(angle, f))
 
 # ── Solid bands (un-perforated reinforcement) ───────────────────────────────
-RIM_CAP_H   = max(8.0, round(POT_OD * 0.06))   # solid hoop at the very top,
-                     # z ∈ [POT_H - RIM_CAP_H, POT_H]. This is the ring you grip,
-                     # and the band the handle holes are cut just below — it has
-                     # to stay continuous. A closed hoop is stiff in-plane, so it
-                     # can be lean: ~8 mm on a small pot is plenty of lip to hook
-                     # fingers under; scales with diameter for bigger, heavier
-                     # pots (~15 mm at Ø250). Every mm here is a mm less soil
-                     # depth (the handle holes — and the soil line — track it).
+# There is no separate "rim cap" band anymore — HANDLE_TOP_MARGIN (below)
+# doubles as the top solid grip band; the finger holes sit right up against
+# the pot's rim, so the solid material above them IS the ring you grip.
 BASE_BAND_H = FLOOR_T + 2 * LINE_WIDTH   # solid wall ring at the base, z ∈ [0, BASE_BAND_H] (= floor + one ligament).
                      # Just the floor plus one ligament — the perforation runs
                      # almost to the floor for max drainage. (It used to be 18 mm
@@ -164,13 +159,18 @@ BASE_BAND_H = FLOOR_T + 2 * LINE_WIDTH   # solid wall ring at the base, z ∈ [0
                      # trivial — especially with the light pumice fill — and a
                      # few solid layers at the bed is plenty against warp.)
 
-# Vertical band the perforation lives in. The top of the pot carries no soil
-# load — it only has to support the handles — so the perforation is *not*
-# capped below the handle band; it runs all the way up to just under the rim
-# cap and simply leaves a solid frame around each handle (HANDLE_FRAME) and
-# the solid rim cap above. PERF_Z_HI is decoupled from the handle geometry.
-PERF_Z_LO    = BASE_BAND_H               # perforation starts just above the base band
-PERF_Z_HI    = POT_H - RIM_CAP_H - 4.0   # ...and runs up to 4 mm below the rim cap
+# Handle geometry — hoisted here so PERF_Z_HI can reference the handle bottom
+# (below).  See the full HANDLE_ANGLES / HANDLE_FINGERS block further down.
+HANDLE_FINGER_H   = 20.0        # finger-hole height (pointy-top vertex to vertex)
+HANDLE_TOP_MARGIN =  8.0        # distance from finger-hole top to the pot top
+                                # (the soil max-fill line sits at the finger-hole BOTTOM;
+                                # perforation above that line is wasted — no soil to drain)
+
+# Vertical band the perforation lives in — capped at the finger-hole bottom,
+# which is the max soil-fill line. Above that the wall is empty air, so slits
+# would drain nothing.
+PERF_Z_LO    = BASE_BAND_H                                        # perforation starts just above the base band
+PERF_Z_HI    = POT_H - HANDLE_TOP_MARGIN - HANDLE_FINGER_H        # ...ends at the finger-hole BOTTOM (= HANDLE_Z_LO)
 HANDLE_FRAME = 10.0  # width of the solid frame kept around each handle (perforation keep-out)
 
 # ── Vertical-slit wall perforation ──────────────────────────────────────────
@@ -186,7 +186,7 @@ HANDLE_FRAME = 10.0  # width of the solid frame kept around each handle (perfora
 # root-block property comes from slit *width*, not shape.
 SLIT_W        = float(os.environ.get("POT_SLIT_W", "0.8"))     # tangential slit width (printable floor ≈ 1 × LINE_WIDTH — the slit is a single skipped-perimeter gap)
 SLIT_H        = float(os.environ.get("POT_SLIT_H", "4.8"))     # slit height (6 × LINE_WIDTH)
-SLIT_LIG      = float(os.environ.get("POT_SLIT_LIG", "2.4"))   # web between slits — same in both directions (3 × LINE_WIDTH)
+SLIT_LIG      = float(os.environ.get("POT_SLIT_LIG", "4.8"))   # web between slits — same in both directions (6 × LINE_WIDTH); ~half the slit density of the tighter 2.4 setting
 SLIT_COL_PITCH = SLIT_W + SLIT_LIG
 SLIT_ROW_PITCH = SLIT_H + SLIT_LIG
 SLIT_HALF_H    = SLIT_H / 2.0
@@ -226,7 +226,7 @@ HANDLE_COUNT        = 0 if _LIGHT else 2
 # nearest face (roughly, not exactly, opposite).
 HANDLE_ANGLES       = [_snap_to_face(i * 360.0 / HANDLE_COUNT) for i in range(HANDLE_COUNT)] if HANDLE_COUNT else []
 HANDLE_FINGERS_MAX  =  4
-HANDLE_FINGER_H     = 20.0   # finger-hole height (pointy-top vertex to vertex)
+# HANDLE_FINGER_H is defined earlier (hoisted so PERF_Z_HI can reference it).
 HANDLE_FINGER_AF    = HANDLE_FINGER_H * math.sqrt(3.0) / 2.0   # ≈ 17.3 — across-flats width (regular hex)
 HANDLE_FINGER_GAP   =  6.0   # solid pillar between adjacent finger holes
 HANDLE_MAX_ARC_DEG  = 100.0  # a handle cluster + its two frames may span at most this much of the wall
@@ -255,12 +255,10 @@ else:
 del _FACE_FIT
 
 HANDLE_W      = _handle_chord(HANDLE_FINGERS) if HANDLE_FINGERS else 0.0   # total grip span (chord)
-# Finger holes sit as high as possible: only HANDLE_LINTEL of solid wall is left
-# between their top and the rim cap (you can't fill soil above the holes, so the
-# higher they are the more soil fits). The real ceiling is the rim cap itself,
-# which must stay a continuous grip hoop — shrink RIM_CAP_H to go higher still.
-HANDLE_LINTEL = 2.0                               # solid band between the finger-hole tops and the rim cap
-HANDLE_Z_HI   = POT_H - RIM_CAP_H - HANDLE_LINTEL # top vertex of the finger holes
+# Finger holes sit HANDLE_TOP_MARGIN mm below the pot's rim — the solid band
+# above the holes is the grip hoop itself (no separate rim cap). Every mm of
+# margin is a mm less soil depth.
+HANDLE_Z_HI   = POT_H - HANDLE_TOP_MARGIN         # top vertex of the finger holes (HANDLE_TOP_MARGIN hoisted above)
 HANDLE_Z_MID  = HANDLE_Z_HI - HANDLE_FINGER_H / 2.0
 HANDLE_Z_LO   = HANDLE_Z_MID - HANDLE_FINGER_H / 2.0
 
@@ -394,7 +392,7 @@ DRAIN_CHANNEL_OD_RECESS    =  0.5    # the pipe's outer face sits this far insid
 DRAIN_CHANNEL_R_AXIS_TOP   = apo_out_at(POT_H) - DRAIN_CHANNEL_TUBE_OR - DRAIN_CHANNEL_OD_RECESS
 DRAIN_CHANNEL_R_AXIS_BASE  = apo_out_at(0.0)   - DRAIN_CHANNEL_TUBE_OR - DRAIN_CHANNEL_OD_RECESS
 DRAIN_CHANNEL_R_AXIS       = DRAIN_CHANNEL_R_AXIS_TOP    # reference (top); the pipe slants between base & top
-DRAIN_CHANNEL_FLOOR_BORE_R = DRAIN_CHANNEL_R_CH + 0.5                                 # bore-through-floor cut radius (> R_CH; hose still fits)
+DRAIN_CHANNEL_FLOOR_BORE_R = DRAIN_CHANNEL_R_CH                                       # bore-through-floor = pipe bore (matched so no ledge inside the pipe base)
 if not DRAIN_CHANNEL or RIB_COUNT == 0:
     DRAIN_CHANNEL_ANGLE    = 0.0                              # unused if no drain channel; safe default
 elif IS_POLY:
@@ -441,12 +439,12 @@ RADIAL_CUT_DEPTH = RADIAL_CUT_HI - RADIAL_CUT_LO
 assert POT_ID > 0, "wall too thick for this diameter"
 assert SLIT_LIG > 0, "slits would overlap"
 assert PERF_Z_HI > PERF_Z_LO + SLIT_ROW_PITCH, "no room for a perforation band — pot too short"
-assert PERF_Z_HI <= POT_H - RIM_CAP_H, "perforation runs into the rim cap"
+assert PERF_Z_HI <= HANDLE_Z_LO + 1e-6, "perforation extends above the finger-hole bottom (soil max-fill line)"
 assert HANDLE_COUNT >= 0
 assert HANDLE_FINGER_GAP > 0, "finger holes would merge"
 if HANDLE_COUNT > 0:
     assert HANDLE_FINGERS >= 2 and HANDLE_FINGERS % 2 == 0, "handle finger count must be even (the centreline rib must clear the holes)"
-    assert HANDLE_Z_HI < POT_H - RIM_CAP_H, "handle would break into the rim cap"
+    assert HANDLE_Z_HI < POT_H, "handle would break through the pot rim"
     if IS_POLY:
         _flat_w = 2.0 * R_OUT * math.sin(math.pi / NUM_FACES)   # outer flat-face width
         assert HANDLE_W < _flat_w - 2.0 * CORNER_FILLET, "handle fingers are wider than a flat face — fewer/smaller fingers or more faces or bigger POT_OD"

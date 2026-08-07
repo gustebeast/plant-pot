@@ -43,24 +43,24 @@ from .dimensions import (
     POT_OD, POT_ID, POT_H, WALL_T, FLOOR_T,
     R_IN, R_OUT, R_MID,
     IS_POLY, NUM_FACES, FACE_ANGLES, APO_OUT, APO_IN, CORNER_FILLET,
-    IS_TAPER, R_BASE, R_TOP, COS_HALF, APO_IN_BASE, RIM_CAP_H,
+    IS_TAPER, R_BASE, R_TOP, COS_HALF, APO_IN_BASE,
     rc_out_at, rc_in_at, apo_out_at, apo_in_at,
     SLIT_W, SLIT_H, SLIT_LIG, SLIT_COL_PITCH, SLIT_ROW_PITCH, SLIT_HALF_H, SLIT_HALF_W,
     PERF_Z_LO, PERF_Z_HI, PERF_TOP_Z,
-    HANDLE_ANGLES, HANDLE_W, HANDLE_FINGERS, HANDLE_FINGER_AF, HANDLE_FINGER_GAP,
+    HANDLE_ANGLES, HANDLE_W, HANDLE_FINGERS, HANDLE_FINGER_H, HANDLE_FINGER_AF, HANDLE_FINGER_GAP,
     HANDLE_Z_LO, HANDLE_Z_HI, HANDLE_Z_MID, HANDLE_FRAME,
     RIB_ANGLES, RIB_W, RIB_PROJ, RIB_Z_LO, RIB_Z_HI,
     FLOOR_RIB_T, FLOOR_RIB_H, FLOOR_SPOKE_COUNT, FLOOR_SPOKE_R_IN, FLOOR_SPOKE_R_OUT,
     FLOOR_SPOKE_OFFSET, FLOOR_SPOKE_ANGLES, FLOOR_RING_RADII,
     FLOOR_PERF, FLOOR_PERF_FRAME, FLOOR_PERF_R_IN,
     DRAINAGE, DRAIN_HOLE_D, DRAIN_RING_R, DRAIN_RING_N,
-    DRAIN_CHANNEL, DRAIN_CHANNEL_R_CH, DRAIN_CHANNEL_TUBE_OR, DRAIN_CHANNEL_FLOOR_BORE_R,
+    DRAIN_CHANNEL, DRAIN_CHANNEL_R_CH, DRAIN_CHANNEL_TUBE_OR, DRAIN_CHANNEL_FLOOR_BORE_R, DRAIN_CHANNEL_OD_RECESS,
     DRAIN_CHANNEL_R_AXIS, DRAIN_CHANNEL_R_AXIS_BASE, DRAIN_CHANNEL_R_AXIS_TOP,
     DRAIN_CHANNEL_ANGLE, DRAIN_CHANNEL_KEEPOUT_DEG,
     DRAIN_CHANNEL_PERF_SOLID_HALF_DEG,
     BOOL_OVERSHOOT, RADIAL_CUT_LO, RADIAL_CUT_HI,
 )
-from .helpers import cyl, tube, poly_prism, compound, hex_prism, slit_prism
+from .helpers import cyl, tube, poly_prism, compound, gable_prism, slit_prism
 
 
 # ── 1. Solid shell ───────────────────────────────────────────────────────────
@@ -258,19 +258,26 @@ def _wall_slit_cutters_poly() -> list[cq.Workplane]:
 # ── 3. Grab handles ──────────────────────────────────────────────────────────
 
 def _handle_cutters() -> list[cq.Workplane]:
-    """Each handle = a tangential row of HANDLE_FINGERS pointy-top hexagonal
-    finger holes. Built like the wall hex cutters (a radial slab per hole),
-    offset tangentially, then orbited to each handle angle."""
-    circ_r  = HANDLE_FINGER_AF / math.sqrt(3.0)
+    """Each handle = a tangential row of HANDLE_FINGERS gabled finger holes
+    (across-flats HANDLE_FINGER_AF wide, HANDLE_FINGER_H tall, top and bottom
+    capped by 45° peaks so the top overhang prints self-supporting). Built
+    like the wall slit cutters (a radial slab per hole), offset tangentially,
+    then orbited to each handle angle. The gable cap gives ~46° overhang on
+    the flared wall (the 10° outward taper adds ~1° over the cutter's 45°) —
+    within printable range in PETG. A regular hex would put the top vertex at
+    60° from vertical, which the flare pushes past what PETG bridges cleanly."""
+    # side_h = HANDLE_FINGER_H - HANDLE_FINGER_AF so total vertex-to-vertex
+    # height stays HANDLE_FINGER_H (each 45° cap adds HANDLE_FINGER_AF/2).
+    side_h  = max(0.1, HANDLE_FINGER_H - HANDLE_FINGER_AF)
     pitch   = HANDLE_FINGER_AF + HANDLE_FINGER_GAP
     n       = HANDLE_FINGERS
     offsets = [(i - (n - 1) / 2.0) * pitch for i in range(n)]      # centred tangential offsets
     # Round wall: a deep radial slab (so edge holes clear the curve). Flat face:
     # punch straight through the panel (no curvature to clear).
     if IS_POLY:
-        finger = hex_prism(circ_r, apo_in_at(0.0) - BOOL_OVERSHOOT, apo_out_at(POT_H) + BOOL_OVERSHOOT)
+        finger = gable_prism(HANDLE_FINGER_AF, side_h, apo_in_at(0.0) - BOOL_OVERSHOOT, apo_out_at(POT_H) + BOOL_OVERSHOOT)
     else:
-        finger = hex_prism(circ_r, RADIAL_CUT_LO, RADIAL_CUT_HI)
+        finger = gable_prism(HANDLE_FINGER_AF, side_h, RADIAL_CUT_LO, RADIAL_CUT_HI)
     cutters: list[cq.Workplane] = []
     for a in HANDLE_ANGLES:
         for off in offsets:
@@ -296,7 +303,11 @@ def _floor_slit_cutters() -> list[cq.Workplane]:
 
     rc_in_base = APO_IN_BASE / COS_HALF
     r_outer_lim = (APO_IN_BASE if IS_POLY else rc_in_base) - clear
-    r_inner_lim = FLOOR_PERF_R_IN + SLIT_HALF_H
+    # A slit centred at r spans [r - SLIT_HALF_H, r + SLIT_HALF_H] radially.
+    # Keep the inner end past the centre by at least half a ligament, so
+    # opposite-side slits don't overlap through the origin (OCCT boolean cost
+    # explodes when many cutters overlap at a point).
+    r_inner_lim = max(FLOOR_PERF_R_IN + SLIT_HALF_H, SLIT_HALF_H + SLIT_LIG / 2.0)
 
     n_rings = max(0, int((r_outer_lim - r_inner_lim) // row_pitch) + 1)
 
@@ -484,17 +495,30 @@ def _drain_channel_floor_bore_and_pipe() -> tuple[cq.Workplane, cq.Workplane]:
                   .translate((R_base, 0.0, 0.0))
                   .rotate((0, 0, 0), (0, 0, 1), a))
 
+    # Rectangular fill from the drain axis (midpoint of the pipe) out to the
+    # outer wall face, tangential width = pipe bore ID (2·R_CH). Fills the
+    # tight corners where the round pipe meets the flat/curved wall so the
+    # slicer doesn't see razor-thin geometry. The bore is cut LAST to restore
+    # the hose channel that the fill would otherwise block — the "hose channel
+    # remains a full-height cylinder of radius R_CH" invariant is preserved.
+    fill_x_in  = 0.0                                     # drain axis (pipe midpoint)
+    fill_x_out = tube_or + DRAIN_CHANNEL_OD_RECESS       # coplanar with the outer wall face
+
     if not IS_TAPER:
-        # Straight wall — a plain vertical tube (capped at the pot's z extents).
-        pipe = (tube(2.0 * tube_or, 2.0 * r_ch, POT_H, z=0.0)
+        # Straight wall — plain tube + plain box fill, minus the bore.
+        pipe_tube = tube(2.0 * tube_or, 2.0 * r_ch, POT_H, z=0.0)
+        fill = (cq.Workplane("XY")
+                .center((fill_x_in + fill_x_out) / 2.0, 0.0)
+                .rect(fill_x_out - fill_x_in, 2.0 * r_ch)
+                .extrude(POT_H))
+        bore = cyl(2.0 * r_ch, POT_H + 2.0 * BOOL_OVERSHOOT, z=-BOOL_OVERSHOOT)
+        pipe = (pipe_tube.union(fill, clean=False).cut(bore, clean=False)
                 .translate((R_base, 0.0, 0.0))
                 .rotate((0, 0, 0), (0, 0, 1), a))
         return floor_bore, pipe
 
-    # Tapered wall — an oblique tube whose axis runs from R_base (floor) to R_top
-    # (rim), so it stays merged into the sloping wall at constant recess. Build
-    # by lofting the outer circles and subtracting a (slightly over-long) lofted
-    # bore so the through-hole is clean at both ends.
+    # Tapered wall — oblique tube + oblique fill + oblique bore cut, all
+    # following the slanted axis from R_base at the floor to R_top at the rim.
     def axis_x(z):
         return R_base + (R_top - R_base) * (z / POT_H)
     def oblique_cyl(radius, z0, z1):
@@ -502,8 +526,18 @@ def _drain_channel_floor_bore_and_pipe() -> tuple[cq.Workplane, cq.Workplane]:
         return (cq.Workplane("XY").workplane(offset=z0).center(x0, 0.0).circle(radius)
                 .workplane(offset=z1 - z0).center(x1 - x0, 0.0).circle(radius)
                 .loft(ruled=True))
-    pipe = oblique_cyl(tube_or, 0.0, POT_H).cut(
-        oblique_cyl(r_ch, -BOOL_OVERSHOOT, POT_H + BOOL_OVERSHOOT))
+    def oblique_fill(z0, z1):
+        x0, x1 = axis_x(z0), axis_x(z1)
+        def _rect(cx):
+            return [(cx + fill_x_in, -r_ch), (cx + fill_x_out, -r_ch),
+                    (cx + fill_x_out,  r_ch), (cx + fill_x_in,  r_ch)]
+        return (cq.Workplane("XY").workplane(offset=z0).polyline(_rect(x0)).close()
+                .workplane(offset=z1 - z0).polyline(_rect(x1)).close()
+                .loft(ruled=True))
+    bore = oblique_cyl(r_ch, -BOOL_OVERSHOOT, POT_H + BOOL_OVERSHOOT)
+    pipe = (oblique_cyl(tube_or, 0.0, POT_H)
+            .union(oblique_fill(0.0, POT_H), clean=False)
+            .cut(bore, clean=False))
     pipe = pipe.rotate((0, 0, 0), (0, 0, 1), a)
     return floor_bore, pipe
 
@@ -532,18 +566,25 @@ def _channel_pipe_slit_cutters() -> list[cq.Workplane]:
         return R_base + (R_top - R_base) * (z / POT_H)
     r_mid   = (r_ch + tube_or) / 2.0                         # pipe mid-wall radius (about the groove axis)
 
-    col_pitch  = SLIT_COL_PITCH
-    n_cols     = max(3, round((math.pi * 2.0 * r_mid) / col_pitch))
-    d_phi      = 360.0 / n_cols
-    row_pitch  = SLIT_ROW_PITCH
     half_h     = SLIT_HALF_H
     solid_half = DRAIN_CHANNEL_PERF_SOLID_HALF_DEG           # outward arc that stays solid (centred on phi_local = 0)
 
-    z_lo, z_hi = FLOOR_T, POT_H
-    span    = z_hi - z_lo
-    usable  = span - 2.0 * half_h
-    n_rows  = max(1, int(usable // row_pitch) + 1)
-    z_first = z_lo + half_h + (usable - (n_rows - 1) * row_pitch) / 2.0
+    # Just TWO slits at the very bottom of the pipe — that's where water
+    # pools at the base of the soil column and drains through the floor bore.
+    # Everything above stays solid: the pipe is a rigid stiffener, and any
+    # slits higher up would just leak soil into an inter-pot gap that nothing
+    # can reach. Set z so the slit's BOTTOM edge sits at FLOOR_T (flush with
+    # the floor bore, no gap).
+    n_rows      = 1
+    n_cols_pipe = 2
+    z_first     = FLOOR_T + half_h
+    row_pitch   = 0.0
+    # Two slits, symmetric across the inward direction (phi_local = 180°),
+    # centred in the perforable arc so they're each a quarter of the way in
+    # from either end of the arc.
+    perforable_arc = 360.0 - 2.0 * solid_half
+    d_phi = perforable_arc / n_cols_pipe
+    phi_first = solid_half + d_phi / 2.0    # first slit centre (measured from outward = 0°)
 
     # If a floor spoke butts into the pipe (it lands on DRAIN_CHANNEL_ANGLE and
     # _floor_ribs() truncated it to do so), keep the patch of pipe wall where it
@@ -569,14 +610,15 @@ def _channel_pipe_slit_cutters() -> list[cq.Workplane]:
     # pipe's pre-rotation frame; the inward (soil) side is around phi_local = 180°.
     cutters: list[cq.Workplane] = []
     for ri in range(n_rows):
-        z_c   = z_first + ri * row_pitch
-        shift = (d_phi / 2.0) if (ri % 2) else 0.0           # honeycomb stagger
-        for ci in range(n_cols):
-            phi_local = (shift + ci * d_phi) % 360.0
-            if min(phi_local, 360.0 - phi_local) < solid_half:    # in the solid outward arc — skip
+        z_c = z_first + ri * row_pitch
+        for ci in range(n_cols_pipe):
+            phi_local = phi_first + ci * d_phi
+            # Leave solid where the floor spoke butts into the pipe (inward side,
+            # near the floor). Fixed 15° tolerance — enough for the spoke's
+            # physical width, independent of d_phi (which is huge when there
+            # are only a couple of slits per row).
+            if spoke_on_channel and z_c < z_clear and _angular_dist_deg(phi_local, 180.0) < 15.0:
                 continue
-            if spoke_on_channel and z_c < z_clear and _angular_dist_deg(phi_local, 180.0) < 0.75 * d_phi:
-                continue                                          # leave solid where the floor spoke attaches
             cutters.append(
                 base
                 .translate((0.0, 0.0, z_c))
@@ -587,14 +629,174 @@ def _channel_pipe_slit_cutters() -> list[cq.Workplane]:
     return cutters
 
 
+# ── Parallel cone-intersect (opt-in via POT_PARALLEL_INTERSECT=N) ───────────
+
+def _parallel_cone_intersect(add_wp: cq.Workplane, proxy_wp: cq.Workplane,
+                             n_slices: int) -> cq.Workplane:
+    """Split proxy + additive into ``n_slices`` horizontal bands, intersect
+    each band in a separate subprocess, then fuse the results back into one
+    solid. OCCT's boolean engine only lightly parallelizes internally, so
+    splitting the domain across processes typically wins big on a many-core
+    box (near-linear speedup up to ~cpu_count // 2, then Amdahl kicks in).
+
+    Slice cuts and the final fuse both use OCCT itself — so the wall/floor
+    slit imprints that straddle a slice boundary get cleanly re-joined. z
+    bands are evenly spaced; if the fuse ever leaves visible hairlines at a
+    boundary, snapping the boundaries into slit-row ligament gaps would fix
+    it, but the fuse handles the coincident faces cleanly in practice."""
+    import multiprocessing
+    import shutil
+    import tempfile
+    import time as _time
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Fuse
+    from OCP.BRepTools import BRepTools
+    from OCP.TopoDS import TopoDS_Shape
+    from OCP.TopTools import TopTools_ListOfShape
+
+    from ._intersect_worker import intersect_worker
+
+    add_s   = add_wp.val().wrapped
+    proxy_s = proxy_wp.val().wrapped
+
+    # Slice cutter: a big box spanning the whole XY extent, from z0 to z1.
+    # Reach: 4 × outer OD each way is plenty of margin for any pot in this
+    # workspace. BOOL_OVERSHOOT on the outermost z faces ensures the top and
+    # bottom slice fully cover their respective end-caps.
+    reach = 4.0 * max(2.0 * R_TOP, 2.0 * R_BASE)
+
+    def _slice(shape: TopoDS_Shape, z0: float, z1: float) -> TopoDS_Shape:
+        box = (cq.Workplane("XY").workplane(offset=z0)
+               .rect(reach, reach)
+               .extrude(z1 - z0)).val().wrapped
+        algo = BRepAlgoAPI_Common(shape, box)
+        algo.Build()
+        return algo.Shape()
+
+    z_lo, z_hi = -BOOL_OVERSHOOT, POT_H + BOOL_OVERSHOOT
+    z_edges = [z_lo + i * (z_hi - z_lo) / n_slices for i in range(n_slices + 1)]
+
+    tmp = tempfile.mkdtemp(prefix="pot_parallel_")
+    try:
+        specs: list[tuple[str, str, str]] = []
+        for i in range(n_slices):
+            p_path = f"{tmp}/proxy_{i}.brep"
+            a_path = f"{tmp}/add_{i}.brep"
+            o_path = f"{tmp}/out_{i}.brep"
+            BRepTools.Write_s(_slice(proxy_s, z_edges[i], z_edges[i + 1]), p_path)
+            BRepTools.Write_s(_slice(add_s,   z_edges[i], z_edges[i + 1]), a_path)
+            specs.append((p_path, a_path, o_path))
+        print(f"    dispatched {n_slices} slice-intersects to subprocesses...", flush=True)
+        _t_dispatch = _time.time()
+
+        # Windows uses 'spawn'; each worker re-executes `python -m src.build`
+        # to find the pickled callable, which re-imports build.py → pot.py
+        # → triggers a full rebuild in every worker. Setting POT_NOBUILD=1
+        # in the environment for the spawn makes workers skip the module-
+        # level build AND the module-level heal/main in build.py; the parent
+        # already built `pot` earlier, so it's unaffected. We restore the
+        # var in the parent afterwards so build.py's later main() (which
+        # runs AFTER pot.py finishes importing) still exports the STEPs.
+        # Hard wall-clock deadline for the parallel intersect. If any single
+        # subprocess exceeds SLICE_TIMEOUT (or the whole pool exceeds
+        # TOTAL_TIMEOUT), cancel and raise — turns a silent multi-hour hang
+        # into an actionable error. Values are generous vs. observed times
+        # (~10-60s per slice, ~15-60s total) so they only fire on real hangs.
+        SLICE_TIMEOUT  = 300.0   # per-slice
+        TOTAL_TIMEOUT  = 600.0   # whole pool
+        _prev_nobuild = os.environ.get("POT_NOBUILD")
+        os.environ["POT_NOBUILD"] = "1"
+        try:
+            ctx = multiprocessing.get_context("spawn")
+            with ProcessPoolExecutor(max_workers=n_slices, mp_context=ctx) as pool:
+                futures = {pool.submit(intersect_worker, p, a, o): idx
+                           for idx, (p, a, o) in enumerate(specs)}
+                n_done = 0
+                try:
+                    for fut in as_completed(futures, timeout=TOTAL_TIMEOUT):
+                        idx = futures[fut]
+                        remain = TOTAL_TIMEOUT - (_time.time() - _t_dispatch)
+                        fut.result(timeout=max(1.0, min(SLICE_TIMEOUT, remain)))  # re-raise on worker exception / TimeoutError on hang
+                        n_done += 1
+                        dt = _time.time() - _t_dispatch
+                        print(f"    slice {idx + 1}/{n_slices} done  ({n_done}/{n_slices} complete at {dt:.1f}s)", flush=True)
+                except Exception as exc:
+                    # Timeout or worker crash — cancel and abort cleanly.
+                    for fut in futures:
+                        fut.cancel()
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    raise RuntimeError(f"parallel cone-intersect failed after {_time.time() - _t_dispatch:.1f}s "
+                                       f"({n_done}/{n_slices} slices complete): {exc}") from exc
+        finally:
+            if _prev_nobuild is None:
+                os.environ.pop("POT_NOBUILD", None)
+            else:
+                os.environ["POT_NOBUILD"] = _prev_nobuild
+        print(f"    all slices done in {_time.time() - _t_dispatch:.1f}s; fusing...", flush=True)
+
+        # Read all N slice results, fuse in one compound-fuse pass.
+        b = BRep_Builder()
+        results: list[TopoDS_Shape] = []
+        for _, _, o_path in specs:
+            s = TopoDS_Shape()
+            BRepTools.Read_s(s, o_path, b)
+            results.append(s)
+
+        args  = TopTools_ListOfShape()
+        tools = TopTools_ListOfShape()
+        args.Append(results[0])
+        for r in results[1:]:
+            tools.Append(r)
+        fuse = BRepAlgoAPI_Fuse()
+        fuse.SetArguments(args)
+        fuse.SetTools(tools)
+        fuse.Build()
+        fused = fuse.Shape()
+
+        # Wrap back into a cadquery Workplane. compound → Compound, else Solid.
+        from OCP.TopAbs import TopAbs_COMPOUND
+        wrapped = cq.Compound(fused) if fused.ShapeType() == TopAbs_COMPOUND else cq.Solid(fused)
+        return cq.Workplane("XY").newObject([wrapped])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ── Assembly ─────────────────────────────────────────────────────────────────
 
 def _build_pot() -> cq.Workplane:
+    import subprocess
+    import sys
     import time as _t
     def _step(label, fn):
+        """Run fn() under a step label, printing a heartbeat every 30s so
+        long OCCT booleans aren't silent. The heartbeat is a SEPARATE PYTHON
+        SUBPROCESS (not a thread) because OCP holds the GIL through OCCT
+        calls — a thread-based heartbeat wouldn't tick during the very calls
+        we most want to observe. Subprocess ticks on the OS scheduler
+        regardless of GIL state."""
         print(f"  [{label}] ...", flush=True)
         t0 = _t.time()
-        r = fn()
+        hb_code = (
+            f"import sys, time\n"
+            f"t0 = time.time()\n"
+            f"try:\n"
+            f"    while True:\n"
+            f"        time.sleep(30.0)\n"
+            f"        sys.stdout.write('  [{label}] still working... %ds\\n' % (time.time() - t0))\n"
+            f"        sys.stdout.flush()\n"
+            f"except (KeyboardInterrupt, BrokenPipeError):\n"
+            f"    pass\n"
+        )
+        hb = subprocess.Popen([sys.executable, "-c", hb_code])
+        try:
+            r = fn()
+        finally:
+            hb.terminate()
+            try:
+                hb.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                hb.kill()
         print(f"  [{label}] done in {_t.time() - t0:.1f}s", flush=True)
         return r
 
@@ -668,7 +870,16 @@ def _build_cone_pot(_step) -> cq.Workplane:
     add = _step("additive (cone+pipe+ribs)", lambda: _add_ribs(add))
 
     # 3. One intersection carves the wall + floor perforation into the whole assembly.
-    body = _step("cone-intersect", lambda: add.intersect(proxy, clean=False))
+    #    Opt-in: POT_PARALLEL_INTERSECT=N slices the domain into N horizontal
+    #    bands and intersects each in its own subprocess (OCCT booleans only
+    #    lightly parallelize internally — ~2 cores' worth — so splitting the
+    #    domain scales much better on a many-core box). N=1 or unset = serial.
+    _parallel_n = int(os.environ.get("POT_PARALLEL_INTERSECT", "0"))
+    if _parallel_n >= 2:
+        body = _step(f"cone-intersect ×{_parallel_n} slices",
+                     lambda: _parallel_cone_intersect(add, proxy, _parallel_n))
+    else:
+        body = _step("cone-intersect", lambda: add.intersect(proxy, clean=False))
 
     # 4. Perforate the pipe wall (deferred from step 2 — see above).
     if DRAIN_CHANNEL:
@@ -693,7 +904,12 @@ def _build_outer_pot() -> cq.Workplane:
     safety margin, so the inner rests on the outer's floor and its highest holes
     are still ~5 mm below the outer's rim."""
     OUTER_PERF_COVER = 5.0                                  # safety margin above top of highest hole
-    h_out  = PERF_TOP_Z + OUTER_PERF_COVER + FLOOR_T        # total outer height
+    OUTER_FLOOR_GAP  = 3.0                                  # clearance between inner-pot floor and outer-pot cavity floor (matches side-wall clearance)
+    # The outer is drawn shifted DOWN by (FLOOR_T + OUTER_FLOOR_GAP) in the
+    # assembly so the two pots don't share a floor plane; bump the outer's
+    # height by the same amount so the top of the perforation band is still
+    # covered by OUTER_PERF_COVER after the shift.
+    h_out  = PERF_TOP_Z + OUTER_PERF_COVER + FLOOR_T + FLOOR_T + OUTER_FLOOR_GAP
     OFFSET = WALL_T + 3.0                                   # per-side offset from inner pot outer
     bore_h = h_out - FLOOR_T + BOOL_OVERSHOOT
     inner_fillet = max(0.0, CORNER_FILLET - WALL_T)
