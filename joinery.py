@@ -1,21 +1,30 @@
 """joinery.py — printable mortise-and-tenon SLIDE joints.
 
-FRONT DOOR: `slide_joint`. Describe how each half PRINTS (a PrintSpec: nozzle,
-material, facing) and the room it has (width, length); the facings pick the joint
-family and the materials pick the fit clearance. See JOINERY_README.md.
+ONE ENTRYPOINT: `joint`. The names are the two HALVES — `tenon` and
+`mortise` — never the shape: you describe the SITE and the library builds
+the optimal geometry for it. A site is (a) how each half PRINTS (a
+PrintSpec: nozzle, material, print orientation), (b) the INSTALL axis (the
+one direction deliberately left without retention), and (c) the BOUNDING
+BOX the joint may occupy (width across the face, length of engagement,
+depth past the mating plane). Materials pick the fit clearances (policy:
+`joint_clearances`); `joint_box_min` answers "how much room does a joint
+need here" before you have geometry. See JOINERY_README.md.
 
-    from cadkit.joinery import PrintSpec, slide_joint
+    from cadkit.joinery import PrintSpec, joint
 
     up   = PrintSpec(nozzle=0.8, material="PETG-GF", facing="up")    # prints -Z→+Z
     side = PrintSpec(nozzle=0.8, material="PETG-GF", facing="side")  # prints -Y→+Y
 
-    j   = slide_joint(width=5.6, length=6, tenon=side, mortise=up)   # → arrow ramp+hook
+    j    = joint(width=5.6, length=6, tenon=side, mortise=up)
     host = host.union(j.tenon(root=1.0).translate(...))    # tenon fuses into its host
     ring = ring.cut(j.mortise(drop=2.0).translate(...))    # cavity opens through the face
-    #   tenon=up, mortise=up → the octagon instead; j.height/j.family/j.width_min exposed
+    #   j.height / j.width_min / j.dims exposed; j.family names the profile
+    #   the optimizer picked — INFORMATIONAL only, never an input
 
-The per-family generators below (`octagon_*`, `arrow_*`, both one-`width`-knob) are
-the fine-control layer `slide_joint` dispatches to.
+The per-family generators below (`_octagon_*`, `_arrow_*`, `_tee_*`,
+`_hook_*`) are PRIVATE — the implementation layer `joint` dispatches to.
+Which profile a site gets is the library's decision, not the caller's; new
+profiles can replace old ones without any callsite changing.
 
 CONVENTIONS
 - The profile lives in the local Y-Z plane and is extruded along +X — the
@@ -39,15 +48,15 @@ here like threads.py grew):
   ramp so the TENON prints on a -Y→+Y host (mortise host still -Z→+Z).
   Point the ramp side toward the tenon host's PRINT BED.
 
-A separate FAMILY, `octagon_tenon` / `octagon_mortise` (below), covers the
+A separate FAMILY, `_octagon_tenon` / `_octagon_mortise` (below), covers the
 BOTH-hosts-(-Z→+Z) case with an octagon-on-fat-stem ("stop sign") section: one
 `width` knob (the stem is a computed width/2), the nozzle FLOOR on the tenon and
 the one-nozzle bridge CAP on the mortise roof. See the README's "Octagon joint".
 
-A third FAMILY, `dovetail_tenon` / `dovetail_mortise`, exists because print
+A third FAMILY, `_tee_tenon` / `_tee_mortise`, exists because print
 orientation alone under-determines the joint — the INSTALL AXIS (the direction
 deliberately left without retention) matters too. When the install axis is Z
-(`slide_joint(..., install="z")`, both hosts -Z→+Z), the profile lies flat in
+(`joint(..., install="-z")`, both hosts -Z→+Z), the profile lies flat in
 the plan plane and prints as vertical walls, so the classic sharp dovetail
 needs none of the families' print compromises.
 
@@ -60,8 +69,6 @@ exactly one nozzle (a one-bead bridge), same as the octagon roof.
 import math
 
 import cadquery as cq
-
-_TIP_W = 1.6      # dull-tip flat: ~2 bead widths of a 0.8 mm nozzle
 
 
 def _profile(stem_w, head_w, stem_h, tip_w, ramp, base_z, hook_h=None, nozzle=0.8):
@@ -123,13 +130,13 @@ def _profile(stem_w, head_w, stem_h, tip_w, ramp, base_z, hook_h=None, nozzle=0.
     return pts, H
 
 
-def arrow_width_min(nozzle=0.8):
+def _arrow_width_min(nozzle=0.8):
     """Smallest printable dovetail `width`: at 3·nozzle every segment (stem, barb
     flare, hook) is exactly one nozzle bead."""
     return 3.0 * nozzle
 
 
-def arrow_dims(width, nozzle=0.8, clearance=0.1):
+def _arrow_dims(width, nozzle=0.8, clearance=0.1):
     """Width-based ramp+hook dovetail dims, sized for MAX STRENGTH at a given width:
 
         stem_w = flare = hook_h = width/3   (head_w = stem_w + 2·flare = width)
@@ -141,9 +148,9 @@ def arrow_dims(width, nozzle=0.8, clearance=0.1):
     when stem_w = flare, i.e. width/3. A fatter stem would starve the barb; a bigger
     barb would starve the neck. (σ≈τ assumed for the two modes.) The dull tip is
     PRE-SHRUNK so the MORTISE bridge lands on one nozzle. Floors at 3·nozzle."""
-    if width < arrow_width_min(nozzle) - 1e-9:
+    if width < _arrow_width_min(nozzle) - 1e-9:
         raise ValueError(f"width {width:.3f} below the dovetail minimum "
-                         f"{arrow_width_min(nozzle):.3f} mm (every segment one bead at "
+                         f"{_arrow_width_min(nozzle):.3f} mm (every segment one bead at "
                          f"nozzle={nozzle}) — give it more room, or a finer nozzle")
     seg = width / 3.0                                      # stem_w = flare = hook_h
     return dict(stem_w=seg, head_w=width,                  # head = stem + 2·flare = 3·seg
@@ -152,28 +159,28 @@ def arrow_dims(width, nozzle=0.8, clearance=0.1):
                 hook_h=seg)                                # square hook
 
 
-def arrow_height(width, nozzle=0.8, clearance=0.1):
+def _arrow_height(width, nozzle=0.8, clearance=0.1):
     """Tenon height above the mating plane (what the mortise host must swallow)."""
     _, h = _profile(ramp=True, base_z=0.0, nozzle=nozzle,
-                    **arrow_dims(width, nozzle, clearance))
+                    **_arrow_dims(width, nozzle, clearance))
     return h
 
 
-def arrow_tenon(width, length, nozzle=0.8, clearance=0.1, root=1.0):
+def _arrow_tenon(width, length, nozzle=0.8, clearance=0.1, root=1.0):
     """Ramp+hook dovetail TENON — tenon host prints -Y→+Y (sideways), mortise host
     -Z→+Z. One `width` knob; prism along +X, base at z=0, `root` below for fusion.
     Pass the SAME width/nozzle/clearance to the mortise so they mate."""
     pts, _ = _profile(ramp=True, base_z=-abs(root), nozzle=nozzle,
-                      **arrow_dims(width, nozzle, clearance))
+                      **_arrow_dims(width, nozzle, clearance))
     return cq.Workplane("YZ").polyline(pts).close().extrude(length)
 
 
-def arrow_mortise(width, length, nozzle=0.8, clearance=0.1, drop=2.0):
-    """Cavity CUTTER matching arrow_tenon: the tenon profile dilated `clearance` per
+def _arrow_mortise(width, length, nozzle=0.8, clearance=0.1, drop=2.0):
+    """Cavity CUTTER matching _arrow_tenon: the tenon profile dilated `clearance` per
     side (mitred), dropped `drop` below the mating plane to open through the host
     face. Extrude PAST the host's -X face (open entry); the +X end left inside is
     the stop wall. The mortise neck (= width/4) must clear the nozzle."""
-    d = arrow_dims(width, nozzle, clearance)
+    d = _arrow_dims(width, nozzle, clearance)
     if d["stem_h"] - clearance < nozzle - 1e-9:
         raise ValueError(f"width {width:.2f}: mortise neck {d['stem_h'] - clearance:.2f} "
                          f"below the {nozzle} nozzle floor — widen to >= {4 * nozzle:.1f} mm")
@@ -201,7 +208,7 @@ def arrow_mortise(width, length, nozzle=0.8, clearance=0.1, drop=2.0):
 #     lands on exactly one nozzle.
 #   • the nozzle MINIMUM (thin-feature floor) is on the TENON — the smaller part
 #     (mortise = tenon dilated), so the tenon's segments are what bind. The nominal
-#     profile below IS the tenon; `octagon_width_min` is the smallest width whose
+#     profile below IS the tenon; `_octagon_width_min` is the smallest width whose
 #     tenon segments all clear the nozzle.
 #
 # SIZING — give it ROOM, not force (see JOINERY_README "Octagon joint"). ONE knob:
@@ -231,7 +238,7 @@ def _tenon_roof(nozzle, clearance):
     return t
 
 
-def octagon_width_min(nozzle=0.8, clearance=0.1):
+def _octagon_width_min(nozzle=0.8, clearance=0.1):
     """Smallest `width` whose TENON segments (stem, upper + lower diagonal) all
     clear the nozzle floor — the tenon is the smaller part, so it binds. (The roof
     is exempt: it's the capped bridge, a supported last layer on the tenon.)"""
@@ -242,7 +249,8 @@ def octagon_width_min(nozzle=0.8, clearance=0.1):
                roof_t + n * math.sqrt(2.0))                  # upper (green) diagonal ≥ n
 
 
-def _octagon_profile(width, nozzle, base_z, clearance, height=None):
+def _octagon_profile(width, nozzle, base_z, clearance, height=None,
+                     post_extra=0.0, waist_extra=0.0, stem_w=None):
     """Closed (y, z) points for the TENON cross-section — the smaller part, where the
     nozzle floor is enforced. A stop sign: a `width`-wide waist over a stem of
     `width/2` (see _STEM_FRAC), joined by 45° diagonals — the UPPER (green) set by
@@ -257,32 +265,77 @@ def _octagon_profile(width, nozzle, base_z, clearance, height=None):
     ALL extra height over the width-driven minimum goes into the two VERTICALS,
     split evenly: a taller stem POST (deeper mortise-lip engagement = more
     capture shear) and a taller WAIST wall (more flat flank bearing).
-    height=None keeps the classic minimal profile."""
+    height=None keeps the minimal profile — verticals at the TWO-NOZZLE
+    quality tier (user print finding; the ROOF alone stays one nozzle: it is
+    the mortise's bridge, intentionally the smallest possible overhang).
+
+    `post_extra` / `waist_extra`: the Z-RELIEF pair (see _oct_relief) —
+    applied to OPPOSITE halves of one joint. The TENON takes `post_extra`
+    on its stem POST (the whole octagon rides away from the mating plane);
+    the CAVITY takes `waist_extra` on its WAIST VERTICAL (the room the
+    displaced octagon moves into). Net: the seated 45° flare pair — the
+    z-loaded sandwich — opens by exactly that much, while the laterals,
+    the mortise's printed neck wall and the one-nozzle roof bridge all
+    keep their standard story. Both ride ON TOP of any `height` sizing."""
     if nozzle <= 0:
         raise ValueError("nozzle must be > 0")
-    wmin = octagon_width_min(nozzle, clearance)
+    wmin = _octagon_width_min(nozzle, clearance)
     if width < wmin - 1e-9:
         raise ValueError(f"width {width:.3f} is below the printable minimum "
                          f"{wmin:.3f} mm (a tenon segment would drop under the {nozzle} "
                          "nozzle) — give the joint more room, or use a finer nozzle")
     n = nozzle
+    pv = _bead_pref(n)                     # verticals: two-nozzle quality tier
+    # NECK PRE-GROWTH: the mitred clearance dilation SHORTENS the cavity's
+    # neck vertical by clearance·(√2−1) at the retention shoulder (a REFLEX
+    # corner of the cavity outline — both its edges retract when the
+    # outline offsets outward). The tenon post grows by exactly that, so
+    # the MORTISE's printed neck wall lands on the tier (user-caught at
+    # 1.54 on a mount channel at clr 0.15). Same lesson, third profile:
+    # the arrow oversizes stem_h, the T pre-grows its lip.
+    grow = abs(clearance) * (math.sqrt(2.0) - 1.0)
     roof_t = _tenon_roof(n, clearance)     # tenon roof → mortise roof = one nozzle
     hw = width / 2.0                       # half flat-to-flat (the waist)
-    stem = _STEM_FRAC * width              # FAT stem (strength optimum, = width/2)
+    stem_def = _STEM_FRAC * width          # FAT stem (strength optimum, = width/2)
+    stem = stem_def if stem_w is None else stem_w
+    # `stem_w` — the HOST-MATCHING override (user-sanctioned deviation
+    # from the width/2 parity, cable-spool mount rings: the stem should
+    # equal the ring bar it hangs from). Only WIDER is modelled: the
+    # 45° shoulder gives up the difference and the WAIST VERTICAL takes
+    # it, so the silhouette height, the swallow and the print story are
+    # IDENTICAL to the default-stem joint — retention shoulder parity is
+    # knowingly forfeited (floored at one nozzle per side).
+    if stem_w is not None:
+        if stem_w < stem_def - 1e-9:
+            raise ValueError(f"stem override {stem_w:.3f} under the computed "
+                             f"optimum {stem_def:.3f} — only a WIDER stem is "
+                             "modelled (narrower starves the tension link)")
+        if hw - stem_w / 2.0 < n - 1e-9:
+            raise ValueError(f"stem override {stem_w:.3f} starves the "
+                             f"retention shoulder under the {n} nozzle — "
+                             f"max for width {width} is {2.0 * (hw - n):.3f}")
     orange = hw - stem / 2.0               # lower diagonal run = shoulder overhang / side
+    waist_pad = (hw - stem_def / 2.0) - orange  # what the shoulder gave up
     green = hw - roof_t / 2.0              # upper diagonal run (set by width)
-    h_min = n + orange + n + green         # the width-driven minimal height
+    h_min = (pv + grow + (hw - stem_def / 2.0)
+             + pv + green)                 # the width-driven minimal height
+                                           # (stem-override INVARIANT)
     extra = 0.0
     if height is not None:
         if height < h_min - 1e-9:
             raise ValueError(f"height {height:.3f} is below this width's minimum "
-                             f"{h_min:.3f} mm (45° diagonals + one-nozzle verticals "
+                             f"{h_min:.3f} mm (45° diagonals + two-nozzle verticals "
                              "are incompressible) — raise height or shrink width")
         extra = height - h_min
-    post_h = n + extra / 2.0               # stem standoff above the mating plane
+    post_h = pv + grow + extra / 2.0 + post_extra   # stem standoff above the
+                                           # mating plane (pre-grown: mortise
+                                           # neck = pv; + the tenon's z-relief)
     z_neck = post_h
     z_wb = z_neck + orange                 # lower (orange) diagonal → waist bottom
-    z_wt = z_wb + n + extra / 2.0          # vertical (grows with height) → waist top
+    z_wt = (z_wb + pv + waist_pad + extra / 2.0
+            + waist_extra)                 # vertical (grows with height, with
+                                           # the stem override's shoulder give-
+                                           # up, and with the cavity's z-relief)
     z_roof = z_wt + green                  # upper (green) diagonal → roof
     pts = [
         (stem / 2.0,  base_z),             # stem right (below the mating plane)
@@ -299,25 +352,50 @@ def _octagon_profile(width, nozzle, base_z, clearance, height=None):
     return pts, z_roof
 
 
-def octagon_height(width, nozzle=0.8, clearance=0.1, height=None):
+def _oct_relief(clearance, back_clearance):
+    """The octagon's Z-FACE relief — the mushroom's split-clearance rule in
+    the octagon's own mechanics (user-directed, cable-spool mount rings:
+    the flare z-sandwich grabs in fiber-filled prints long before the
+    laterals bind). 0 when no split is asked for; else the full
+    back_clearance: the TENON's post grows by it and the CAVITY's waist
+    vertical grows by it, so the seated flare pair opens by bc. Relief in
+    the cavity alone would THIN the mortise's printed neck wall below its
+    tier — the reason the tenon carries half the mechanism."""
+    if back_clearance is None or abs(back_clearance - clearance) <= 1e-9:
+        return 0.0
+    return abs(back_clearance)
+
+
+def _octagon_height(width, nozzle=0.8, clearance=0.1, height=None,
+                    back_clearance=None, stem_w=None):
     """Tenon height above the mating plane (what the mortise host must swallow).
-    With `height` given, echoes it back (after validating the width's minimum)."""
-    _, h = _octagon_profile(width, nozzle, 0.0, clearance, height)
+    With `height` given, echoes it back (after validating the width's minimum).
+    A split `back_clearance` adds the tenon's z-relief post growth on top.
+    A `stem_w` override never changes the height (silhouette-invariant)."""
+    _, h = _octagon_profile(width, nozzle, 0.0, clearance, height,
+                            post_extra=_oct_relief(clearance, back_clearance),
+                            stem_w=stem_w)
     return h
 
 
-def octagon_tenon(width, length, nozzle=0.8, clearance=0.1, root=1.0,
-                  height=None):
+def _octagon_tenon(width, length, nozzle=0.8, clearance=0.1, root=1.0,
+                  height=None, back_clearance=None, stem_w=None):
     """Stop-sign TENON (the nominal shape, where the nozzle floor is enforced): an
     octagon-on-stem prism along +X, base at the z=0 mating plane and extended `root`
     below for fusion. Prints -Z→+Z. `width` = joint size, the stem is width/2 (a
-    computed strength optimum, not a knob), `length` = engagement depth. Pass the
-    SAME width/nozzle/clearance to the mortise so they mate."""
-    pts, _ = _octagon_profile(width, nozzle, -abs(root), clearance, height)
+    computed strength optimum) unless `stem_w` overrides it WIDER to match the
+    hosting bar (shoulder gives, waist vertical takes — see _octagon_profile),
+    `length` = engagement depth. Pass the SAME width/nozzle/clearance(s)/stem to
+    the mortise so they mate. A split `back_clearance` grows the stem POST by
+    the z-relief (see _oct_relief)."""
+    pts, _ = _octagon_profile(width, nozzle, -abs(root), clearance, height,
+                              post_extra=_oct_relief(clearance, back_clearance),
+                              stem_w=stem_w)
     return cq.Workplane("YZ").polyline(pts).close().extrude(length)
 
 
-def _octagon_pocket_profile(width, nozzle, base_z, clearance, height=None):
+def _octagon_pocket_profile(width, nozzle, base_z, clearance, height=None,
+                            waist_extra=0.0, stem_w=None):
     """POCKET variant of the cavity profile: the octagon's waist walls continued
     STRAIGHT DOWN to the opening face — the lower diagonals + stem neck (the
     Z-retention) removed, so the tenon can enter along Z. The upper tapers and
@@ -325,7 +403,8 @@ def _octagon_pocket_profile(width, nozzle, base_z, clearance, height=None):
     located by the waist walls; ±Z and ±X hold nothing — a pocket is an ENTRY
     feature, always paired with a retained mortise segment the tenon slides
     into."""
-    pts, z_roof = _octagon_profile(width, nozzle, base_z, clearance, height)
+    pts, z_roof = _octagon_profile(width, nozzle, base_z, clearance, height,
+                                   waist_extra=waist_extra, stem_w=stem_w)
     hw = width / 2.0
     # pts: [stemR base, stemR neck, waistR bot, waistR top, roofR, roofL,
     #       waistL top, waistL bot, stemL neck, stemL base] — keep waist-top →
@@ -334,13 +413,16 @@ def _octagon_pocket_profile(width, nozzle, base_z, clearance, height=None):
     return [(hw, base_z)] + keep + [(-hw, base_z)], z_roof
 
 
-def octagon_mortise(width, length, nozzle=0.8, clearance=0.1, drop=2.0,
-                    pocket=False, height=None):
+def _octagon_mortise(width, length, nozzle=0.8, clearance=0.1, drop=2.0,
+                    pocket=False, height=None, back_clearance=None,
+                    stem_w=None):
     """Cavity CUTTER — the tenon profile DILATED `clearance` per side (mitred → faces
     stay 45°/vertical) and dropped `drop` below the mating plane so it opens through
     the host's face. Extrude PAST the host's open X-face so the tenon slides in; the
     far end left inside is the stop wall. The printed roof BRIDGE is exactly one
-    nozzle (the tenon roof was pre-shrunk for this).
+    nozzle (the tenon roof was pre-shrunk for this). A split `back_clearance`
+    grows the cavity's WAIST VERTICAL by the z-relief (see _oct_relief) — the
+    room the relief-raised tenon octagon moves into.
 
     `pocket=True` cuts the ENTRY-POCKET variant instead: the Z-retention (neck
     lips) is removed so the tenon can enter straight along Z — used when the
@@ -348,7 +430,171 @@ def octagon_mortise(width, length, nozzle=0.8, clearance=0.1, drop=2.0,
     offset position, then slide along X into the adjacent retained mortise.
     A pocket retains nothing by itself; always pair it with a mortise segment."""
     prof = _octagon_pocket_profile if pocket else _octagon_profile
-    pts, _ = prof(width, nozzle, -abs(drop), clearance, height)
+    pts, _ = prof(width, nozzle, -abs(drop), clearance, height,
+                  waist_extra=_oct_relief(clearance, back_clearance),
+                  stem_w=stem_w)
+    return (cq.Workplane("YZ").polyline(pts).close()
+            .offset2D(abs(clearance), "intersection")
+            .extrude(length))
+
+
+# ─────────────── MUSHROOM (flat-top) — mortise host builds DOWN ──────────────
+# The octagon's tapers + one-nozzle roof exist because its mortise host
+# builds AWAY from the cavity opening ('up'): the cavity's far end is an
+# unsupported BRIDGE. When the mortise host builds TOWARD the opening
+# (facing 'down'), the cavity's WIDE FLAT END prints FIRST on solid
+# material — it is a FLOOR in the real print, not a bridge — and the 45°
+# flares then NARROW the void layer by layer, every step supported. So the
+# profile is the dull arrowhead with its tip FULLY FLATTENED (user's
+# design): stem, two 45° flares, a short vertical waist, one flat top —
+# no taper, no roof cap, no pre-shrunk tip, and a shorter swallow. The
+# TENON host builds 'up': stem, 45° flare out (self-supporting), flat top
+# as a plain last layer. Same slide-along-X + hard-stop conventions.
+# Retention: ±Z (flare/lip + flat top), ±Y (stem + waist walls); X free.
+#
+# A SECOND site also lands here: BOTH hosts 'up' with a THROUGH mortise
+# (joint(..., through=True) — the host's far face is open/cuttable). The
+# up+up octagon exists to CLOSE its cavity printably; when the cavity may
+# simply EXIT the far face there is nothing to close, so the shorter
+# mushroom wins — `height` runs the cavity's waist walls straight out
+# past the far face (no flat end is ever printed; the tenon keeps the
+# minimal profile and its flat top prints as a plain last layer).
+
+
+def _mushroom_width_min(nozzle=0.8, clearance=0.1):
+    """Smallest width whose TENON segments clear the nozzle floor: the
+    stem (width/2) and the 45° flare diagonal (width/4 · √2)."""
+    n = nozzle
+    return max(n / _STEM_FRAC, 2.0 * math.sqrt(2.0) * n)
+
+
+def _mushroom_profile(width, nozzle, base_z, clearance, pocket=False,
+                      height=None, post_extra=0.0):
+    """Closed (y, z) points for the TENON (nominal — the mortise is this
+    dilated): stem = width/2 (the octagon's strength parity), 45° flares,
+    a 2-nozzle vertical waist, flat top at `width`. The stem standoff
+    pre-grows by clearance·(√2−1) so the DILATED cavity's neck wall still
+    lands on the tier (the octagon's mitred-offset lesson — the reflex
+    stem→flare corner shortens it). `post_extra` (the split-clearance
+    z-relief, see _oct_relief): the stem standoff grows by it — the whole
+    head rides away from the mating plane, exactly the octagon's
+    mechanics, so the CAVITY's printed neck wall never pays for the
+    relief. pocket=True: the flare/neck retention is dropped — full-width
+    straight walls down to the opening (z-entry).
+    `height` (optional, the octagon's rule): total profile height above
+    the mating plane BEFORE the relief — the 45° flare and tier neck are
+    printability-locked, so ALL extra rides the WAIST verticals; the
+    relief then adds on top. A THROUGH cavity passes height beyond the
+    host's far face and no flat end is printed.
+    Returns (points, z_top)."""
+    wmin = _mushroom_width_min(nozzle, clearance)
+    if width < wmin - 1e-9:
+        raise ValueError(f"width {width:.3f} is below the printable minimum "
+                         f"{wmin:.3f} mm for the mushroom (stem = width/2 and "
+                         "the 45° flare must each clear the nozzle)")
+    pv = _bead_pref(nozzle)
+    grow = abs(clearance) * (math.sqrt(2.0) - 1.0)
+    hw = width / 2.0
+    stem = _STEM_FRAC * width
+    flare = hw - stem / 2.0                     # 45° run per side
+    z_neck0 = pv + grow                         # no-relief stem standoff
+    z_top0 = z_neck0 + flare + pv               # no-relief minimum height
+    if height is not None:
+        if height < z_top0 - 1e-9:
+            raise ValueError(f"height {height:.3f} is below this width's "
+                             f"minimum {z_top0:.3f} mm (45° flare + tier "
+                             "verticals are incompressible) — raise height "
+                             "or shrink width")
+        base_top = height                       # extra rides the waist walls
+    else:
+        base_top = z_top0
+    z_neck = z_neck0 + post_extra               # relief rides the POST
+    z_wb = z_neck + flare                       # flare top = waist bottom
+    z_top = base_top + post_extra
+    if pocket:
+        return [(hw, base_z), (hw, z_top), (-hw, z_top), (-hw, base_z)], z_top
+    pts = [(stem / 2.0, base_z), (stem / 2.0, z_neck),
+           (hw, z_wb), (hw, z_top),
+           (-hw, z_top), (-hw, z_wb),
+           (-stem / 2.0, z_neck), (-stem / 2.0, base_z)]
+    return pts, z_top
+
+
+def _mushroom_height(width, nozzle=0.8, clearance=0.1, height=None,
+                     back_clearance=None):
+    """Tenon height above the mating plane (what the mortise host must
+    swallow, before the cavity's own top gap). With `height` given,
+    echoes it back (after validating the width's minimum). A split
+    `back_clearance` adds the tenon's z-relief post growth on top (the
+    octagon's rule)."""
+    _, h = _mushroom_profile(width, nozzle, 0.0, clearance, height=height,
+                             post_extra=_oct_relief(clearance,
+                                                    back_clearance))
+    return h
+
+
+def _mushroom_tenon(width, length, nozzle=0.8, clearance=0.1, root=1.0,
+                    height=None, back_clearance=None):
+    pts, _ = _mushroom_profile(width, nozzle, -abs(root), clearance,
+                               height=height,
+                               post_extra=_oct_relief(clearance,
+                                                      back_clearance))
+    return cq.Workplane("YZ").polyline(pts).close().extrude(length)
+
+
+def _mushroom_cavity_pts(width, nozzle, base_z, clearance, back_clearance,
+                         pocket=False, height=None):
+    """CAVITY outline with SPLIT clearances (the flat-arc convention the
+    projects print-validated): lateral faces dilated `clearance`, the
+    Z-LOADED faces — the 45° flare pair (and a capped top) — open by
+    `back_clearance` when seated. Fiber-filled filaments grab on the
+    z-sandwich long before the laterals bind (see joint_clearances).
+    The relief lives on the TENON's grown post (_mushroom_profile
+    post_extra), NOT on this outline's neck: shifting the cavity flares
+    down by bc shaved the printed neck wall below its tier (print-caught
+    at 1.36 on the cable-spool horn cap, the octagon's #875 lesson
+    replayed) — the cavity neck here KEEPS pv + grow and the flare pair
+    sits exactly where the un-relieved tenon's would, so the grown tenon
+    seats with the full bc gap on every z face."""
+    c, bc = abs(clearance), abs(back_clearance)
+    relief = _oct_relief(clearance, back_clearance)
+    pv = _bead_pref(nozzle)
+    grow = c * (math.sqrt(2.0) - 1.0)
+    hw = width / 2.0
+    stem = _STEM_FRAC * width
+    flare = hw - stem / 2.0
+    z_neck = pv + grow                          # the TIER, kept
+    z_wb = z_neck + flare
+    z_top0 = z_wb + pv
+    if height is not None:
+        if height < z_top0 - 1e-9:
+            raise ValueError(f"height {height:.3f} below the width's minimum "
+                             f"{z_top0:.3f} mm")
+        top = height + relief + bc
+    else:
+        top = z_top0 + relief + bc
+    if pocket:
+        return [(hw + c, base_z), (hw + c, top),
+                (-hw - c, top), (-hw - c, base_z)]
+    return [(stem / 2.0 + c, base_z), (stem / 2.0 + c, z_neck),
+            (hw + c, z_wb), (hw + c, top),
+            (-hw - c, top), (-hw - c, z_wb),
+            (-stem / 2.0 - c, z_neck), (-stem / 2.0 - c, base_z)]
+
+
+def _mushroom_mortise(width, length, nozzle=0.8, clearance=0.1, drop=2.0,
+                      pocket=False, height=None, back_clearance=None):
+    """Cavity CUTTER. Without `back_clearance`: the tenon profile dilated
+    uniformly (the original site). With it: split clearances — laterals
+    at `clearance`, z-faces riding the tenon's post relief (fiber depth
+    relief, the octagon's shared mechanics)."""
+    if back_clearance is not None and abs(back_clearance - clearance) > 1e-9:
+        pts = _mushroom_cavity_pts(width, nozzle, -abs(drop), clearance,
+                                   back_clearance, pocket=pocket,
+                                   height=height)
+        return (cq.Workplane("YZ").polyline(pts).close().extrude(length))
+    pts, _ = _mushroom_profile(width, nozzle, -abs(drop), clearance,
+                               pocket=pocket, height=height)
     return (cq.Workplane("YZ").polyline(pts).close()
             .offset2D(abs(clearance), "intersection")
             .extrude(length))
@@ -375,42 +621,209 @@ def _arc_wire(pts, radius, clearance=0.0):
     return wp
 
 
-def octagon_tenon_arc(width, radius, sweep_deg, nozzle=0.8, clearance=0.1,
-                      root=1.0, height=None):
+def _octagon_tenon_arc(width, radius, sweep_deg, nozzle=0.8, clearance=0.1,
+                      root=1.0, height=None, back_clearance=None, stem_w=None):
     """ROTATIONAL-install octagon TENON: the octagon section revolved
     `sweep_deg` about the Z axis at `radius`. Sweeps from plan angle 0 toward
     +Y (rotate about Z to place); mating plane z=0, `root` sunk below for
-    volumetric fusion."""
-    pts, _ = _octagon_profile(width, nozzle, -abs(root), clearance, height)
+    volumetric fusion. A split `back_clearance` grows the stem POST by the
+    z-relief (see _oct_relief), as the straight variant; `stem_w` overrides
+    the stem WIDER to match the hosting bar (silhouette-invariant)."""
+    pts, _ = _octagon_profile(width, nozzle, -abs(root), clearance, height,
+                              post_extra=_oct_relief(clearance, back_clearance),
+                              stem_w=stem_w)
     return _arc_wire(pts, radius).revolve(sweep_deg, (0, 0), (0, 1))
 
 
-def octagon_mortise_arc(width, radius, sweep_deg, nozzle=0.8, clearance=0.1,
-                        drop=2.0, height=None):
-    """Cavity CUTTER matching octagon_tenon_arc — dilated `clearance` per side
+def _octagon_mortise_arc(width, radius, sweep_deg, nozzle=0.8, clearance=0.1,
+                        drop=2.0, height=None, back_clearance=None,
+                        stem_w=None):
+    """Cavity CUTTER matching _octagon_tenon_arc — dilated `clearance` per side
     (mitred in the radial plane), dropped `drop` below the mating plane, swept
     over the LONGER arc (engagement + angular entry overshoot + seat). Sweep
     past the host's open face on the entry side; the far angular end left
-    inside the host is the stop."""
-    pts, _ = _octagon_profile(width, nozzle, -abs(drop), clearance, height)
+    inside the host is the stop. A split `back_clearance` grows the cavity's
+    waist vertical by the z-relief (see _oct_relief)."""
+    pts, _ = _octagon_profile(width, nozzle, -abs(drop), clearance, height,
+                              waist_extra=_oct_relief(clearance, back_clearance),
+                              stem_w=stem_w)
     return _arc_wire(pts, radius, clearance).revolve(sweep_deg, (0, 0), (0, 1))
 
 
-# ─────────────────── DOVETAIL (install ∥ print-Z) slide joint ─────────────────
+# Mushroom ARC variants — the rotational-install analogue, same rules as
+# the octagon's (see the octagon-arc section note): profile at `radius`,
+# revolved about Z; angular clearances convert as arc ≈ radius·angle.
+# With `height` (the THROUGH cavity) the swept slot exits the host's far
+# face — the pairing that makes a flush ring mount on a thin plate work.
+
+
+def _mushroom_tenon_arc(width, radius, sweep_deg, nozzle=0.8, clearance=0.1,
+                        root=1.0, height=None, back_clearance=None):
+    """ROTATIONAL-install mushroom TENON: the flat-top section revolved
+    `sweep_deg` about the Z axis at `radius`. Sweeps from plan angle 0
+    toward +Y (rotate about Z to place); mating plane z=0, `root` sunk
+    below for volumetric fusion. A split `back_clearance` grows the stem
+    POST by the z-relief (see _oct_relief) — as the straight variant."""
+    pts, _ = _mushroom_profile(width, nozzle, -abs(root), clearance,
+                               height=height,
+                               post_extra=_oct_relief(clearance,
+                                                      back_clearance))
+    return _arc_wire(pts, radius).revolve(sweep_deg, (0, 0), (0, 1))
+
+
+def _mushroom_mortise_arc(width, radius, sweep_deg, nozzle=0.8,
+                          clearance=0.1, drop=2.0, height=None,
+                          back_clearance=None):
+    """Cavity CUTTER matching _mushroom_tenon_arc — dropped `drop` below
+    the mating plane, swept over the LONGER arc (engagement + angular
+    entry overshoot + seat). Sweep past the host's open face on the
+    entry side; the far angular end left inside the host is the stop.
+    With `back_clearance` the z-faces back off by it while the laterals
+    keep `clearance` (fiber depth relief, as the straight variant)."""
+    if back_clearance is not None and abs(back_clearance - clearance) > 1e-9:
+        pts = _mushroom_cavity_pts(width, nozzle, -abs(drop), clearance,
+                                   back_clearance, height=height)
+        return _arc_wire(pts, radius).revolve(sweep_deg, (0, 0), (0, 1))
+    pts, _ = _mushroom_profile(width, nozzle, -abs(drop), clearance,
+                               height=height)
+    return _arc_wire(pts, radius, clearance).revolve(sweep_deg, (0, 0), (0, 1))
+
+
+# ────────── RING ↔ RADIAL-ARM CROSSING — the rotational-install SITE ─────────
+# The arc solids above are raw swept profiles; a real rotational site is a
+# RING crossing a RADIAL ARM: the tenon rides the ring, the cavity tunnels
+# the arm, and the two must agree on entry, engagement, seat and stop
+# angles. That arrangement came out identical at every such site the
+# projects built (cable-spool frame_top↔frame_bottom and both mount rings),
+# so it lives here ONCE — `Joint.crossing()` returns an ArcCrossing whose
+# solids come pre-placed for an arm centred on plan angle 0; the two joints
+# then differ only in the profile the site's print facings picked (flat-top
+# mushroom for opposed prints, full stop-sign octagon for matched prints).
+
+
+class ArcCrossing:
+    """ONE ring↔radial-arm crossing of a rotational install — build via
+    `Joint.crossing()`. Conventions, for an arm CENTRED ON PLAN ANGLE 0
+    whose faces sit at ±`arm` (rotate the solids about Z to the real site;
+    mirror("XY") + translate for hanging variants — plan angles survive).
+    `hand` NAMES THE TENON'S SEATING ROTATION and is a real design choice:
+    pick it so the site's SUSTAINED loads rotate the tenon TOWARD the stop
+    (user's rule, cable-spool chirality audit — a rotational joint whose
+    working loads point at the entry works itself undone). hand="cw":
+
+      · the TENON anchors FLUSH at the arm's CCW (+) face — the ENTRY —
+        and spans `ten` of arc inboard (CW). The default engagement is
+        HALF the crossing (the 50% rule, user's call: the joint takes
+        half, the other half stays solid arm — the stop wall);
+      · the CAVITY runs from `seat` beyond the tenon's CW end out past
+        the entry face by `over` (OPEN — the tenon swings in from the
+        open sector). Its CW end wall is the angular STOP, `seat` shy of
+        the seated tenon so an external stop (mating faces, pads) can
+        land first;
+      · seating = the TENON rotating CW (−) relative to the mortise
+        host; uninstall rotates CCW, against whatever preload guards it.
+
+    hand="ccw" is the exact mirror: entry at the arm's CW (−) face, stop
+    at the cavity's CCW end, the tenon seats rotating CCW (+).
+
+    Attributes (all DEGREES): `arm`, `seat`, `over`, `ten`; `free` =
+    ten + over — the relative rotation from seated past even the cavity's
+    overshoot sweep (callers typically add a margin for the install
+    offset). The constructor raises when the stop-side arm material left
+    beyond the cavity drops under one printed wall at the joint's tier."""
+
+    def __init__(self, jnt, radius, arm_w, tenon_l=None, seat=None,
+                 over=1.0, hand="cw"):
+        if hand not in ("cw", "ccw"):
+            raise ValueError("hand must be 'cw' or 'ccw' (the tenon's "
+                             "seating rotation), got %r" % (hand,))
+        if tenon_l is None:
+            tenon_l = arm_w / 2.0                    # the 50% rule
+        if seat is None:
+            seat = jnt.clearance
+        self.joint, self.radius, self.hand = jnt, radius, hand
+        self.arm = math.degrees(math.asin((arm_w / 2.0) / radius))
+        self.seat = math.degrees(seat / radius)
+        self.over = math.degrees(over / radius)
+        self.ten = math.degrees(tenon_l / radius)
+        wall = 2.0 * self.arm - self.ten - self.seat
+        wall_min = math.degrees(2.0 * jnt.nozzle / radius)
+        if wall < wall_min - 1e-9:
+            raise ValueError(
+                f"crossing at r={radius}: tenon {tenon_l} + seat {seat} "
+                f"leave {wall:.2f}deg of stop-side arm — under the "
+                f"{wall_min:.2f}deg tier wall; shorten the tenon or widen "
+                "the arm")
+
+    @property
+    def free(self):
+        """ten + over (degrees): rotation from seated to past the cavity's
+        overshoot — the minimum install offset before the z-mate."""
+        return self.ten + self.over
+
+    @property
+    def cavity_span(self):
+        """The cavity's PLAN angular span (lo, hi), degrees, for this
+        crossing's hand — exactly what `mortise()` cuts, relative to the
+        arm centred on plan angle 0. Callers building geometry that must
+        ABUT the cavity (the cable-spool's ring-groove arcs between the
+        crossings) read this instead of re-deriving the hand mirror —
+        `_handed` is private and free to change."""
+        lo = self.arm - self.ten - self.seat
+        hi = self.arm + self.over
+        return (lo, hi) if self.hand == "cw" else (-hi, -lo)
+
+    def _handed(self, w):
+        """hand="ccw" is the hand="cw" arrangement mirrored about the arm's
+        centreline plane (the profile is symmetric along the sweep, so the
+        mirror is exact)."""
+        return w if self.hand == "cw" else w.mirror("XZ")
+
+    def tenon(self, root=1.0):
+        """The engaged tenon, seated: flush at the entry face, spanning
+        `ten` inboard."""
+        return self._handed(
+            self.joint.tenon_arc(self.radius, self.ten, root=root)
+            .rotate((0, 0, 0), (0, 0, 1), self.arm - self.ten))
+
+    def mortise(self, drop=2.0):
+        """The arm's cavity cutter: stop wall `seat` beyond the seated
+        tenon's stop-side end, open past the entry face by `over`."""
+        return self._handed(
+            self.joint.mortise_arc(self.radius,
+                                   self.ten + self.seat + self.over,
+                                   drop=drop)
+            .rotate((0, 0, 0), (0, 0, 1),
+                    self.arm - self.ten - self.seat))
+
+
+# ──────────── T-SLOT (install ∥ print-Z) slide joint — was the dovetail ──────
 # Third family, unlocked by the INSTALL AXIS rather than a print trick: print
 # orientation alone under-determines a slide joint — the INSTALL direction (the
 # one axis deliberately left without retention) matters just as much. When that
 # axis is Z, the same axis both hosts print in, the profile lies flat in the
-# X-Y plane and every working face is a printed VERTICAL WALL. No overhangs
-# anywhere, so no arrow ramp and no octagon roof bridge: the classic sharp
-# dovetail prints as drawn.
+# X-Y plane and every working face is a printed VERTICAL WALL.
+#
+# The profile is a SQUARE-SHOULDERED T: neck through the mating plane, short
+# lips, then a parallel-sided head bar. It REPLACED the classic angled
+# dovetail (print finding at a 0.8 nozzle, retractable-cable-spool): the
+# dovetail concentrates its engagement in sharp plan corners, and the nozzle
+# radius rounds the tenon's acute corners DOWN while rounding the mortise's
+# inner corners UP — the corners collide before the faces seat and most of
+# the wedge detail is gone. Square 90° corners round compatibly on both
+# halves; retention becomes flat shoulder bearing, which also removes the
+# dovetail's lateral cam component (pull-out no longer levers the mortise
+# lips apart). The one dovetail virtue lost — wedge take-up of clearance —
+# was never used: these are SLIDE joints running print-tested clearances.
+# (Internally the family is `_tee_*`; the public surface is `joint` —
+# names name the halves, never the profile.)
 # Convention: profile in the local (x, y) PLAN plane — width across Y (like the
-# other families), the head flares toward +X (rotate about Z to aim it), mating
+# other families), the head toward +X (rotate about Z to aim it), mating
 # plane at x=0 — and the prism extrudes along +Z, the INSTALL axis. The joint
-# constrains ±X (neck lips / head end wall) and ±Y (flank walls) by shape; ±Z
-# is free by design. The caller closes ONE Z-end with a hard stop (un-cut host
-# material past the cavity's far end) and guards the other with a preload or
-# the next part in the stack.
+# constrains ±X (neck lips / head end wall) and ±Y (neck + head side walls)
+# by shape; ±Z is free by design. The caller closes ONE Z-end with a hard
+# stop (un-cut host material past the cavity's far end) and guards the other
+# with a preload or the next part in the stack.
 
 # The joint is sized by the ROOM it MAY occupy — the caller passes the mortise's
 # AVAILABLE space, not the joint's dimensions:
@@ -418,89 +831,191 @@ def octagon_mortise_arc(width, radius, sweep_deg, nozzle=0.8, clearance=0.1,
 #            taller is always stronger)
 #   depth  — available depth into the host, past the mating plane
 #   width  — available width across the host's face
-# The profile is then OPTIMIZED, not inscribed: the pull-out capacity is
-# min(tenon NECK tension, the two face LIPS shearing along the flanks, the two
-# shoulders BEARING), per unit engagement, same material, shear ≈ 0.6·tensile,
-# bearing ≈ 1.5·tensile:
-#   neck tension  ∝ 1.0 · neck
-#   lip shear     ∝ 2 · 0.6 · depth_used            → parity at neck = 1.2·d
-#   shoulder bearing ∝ 2 · 1.5 · o (overhang/side)  → parity at o = neck/3
-# Growing the weakest link until a BOUND binds:
-#   neck = min(0.6·width, 1.2·depth)   (head = neck + 2·o must fit width)
-#   o    = max(nozzle, neck/3)
-#   depth_used = neck/1.2  — parity depth; surplus available depth is NOT used
-#   (it would add nothing the neck can deliver — it stays host material).
+# The profile is then MAX-MIN OPTIMIZED, not inscribed: pull-out capacity is
+# the WEAKEST of four links, per unit engagement, same material, shear ≈
+# 0.6·tensile, bearing ≈ 1.5·tensile — note the T has TWO stacked shear
+# elements SHARING the depth (the angled dovetail's single flank was both):
+#   neck tension       ∝ 1.0 · neck
+#   mortise LIP shear  ∝ 2 · 0.6 · lip   (face → head channel, mortise side)
+#   tenon BAR shear    ∝ 2 · 0.6 · bar   (the head bar off the stem)
+#   shoulder bearing   ∝ 2 · 1.5 · o     → parity at o = neck/3
+# Strongest joint in the given box (user's rule), with TWO-TIER wall sizing
+# (user print finding): every tenon segment TARGETS 2·nozzle — two clean
+# perimeters slice crisply where a single bead prints mushy — and degrades
+# toward the ONE-NOZZLE hard floor only when the room is too tight:
+#   neck = 0.6·min(width, depth)  — shear parity across both stacked
+#          elements; floored at 2·nozzle, capped at width − 2·nozzle
+#   o    = min((width − neck)/2, max(neck/3, 2·nozzle))
+#   bar  = max(min(2·nozzle, (depth−clr)/2), min(neck/1.2, (depth−clr)/2))
+#   lip  = bar + clearance;  depth_used = lip + bar
+#   (surplus room beyond parity stays host material)
+# The MORTISE is the dilated copy — larger everywhere EXCEPT its lip (the
+# one concave feature: dilation THINS it by `clearance`) — so the tenon
+# lip is pre-grown and the printed mortise lip = the tenon bar, keeping
+# both halves' walls at tier. See _tee_box_min() for the smallest
+# boxes that guarantee the hard (nozzle) and quality (2·nozzle) tiers.
 
 _DT_SHEAR_RATIO = 1.2    # lip-shear parity: neck = 1.2·depth_used (τ ≈ 0.6·σ, 2 planes)
 _DT_BEAR_FRAC   = 3.0    # bearing parity: shoulder overhang o = neck/3 (σ_c ≈ 1.5·σ, 2 sides)
 
 
-def dovetail_width_min(nozzle=0.8):
-    """Smallest available `width` that fits a printable joint: a 2-nozzle neck
-    + one nozzle of shoulder per side."""
-    return 4.0 * nozzle
+def _bead(nozzle):
+    """The HARD FLOOR for a printed wall: exactly ONE NOZZLE. (An earlier
+    +0.05 buffer guarded against classic wall generators dropping
+    exactly-nozzle lines; the projects slice with ARACHNE now, which
+    handles them — buffer removed, user's call 2026-07-22.)"""
+    return nozzle
 
 
-def dovetail_dims(width, depth, nozzle=0.8):
-    """OPTIMIZE the plan profile inside the available room (`width` across the
-    face, `depth` into the host): returns (neck_w, head_w, depth_used) per the
-    strength-parity model above. Unused room stays host material. Raises when
-    the room can't fit a printable joint."""
-    wmin = dovetail_width_min(nozzle)
+def _bead_pref(nozzle):
+    """The QUALITY TARGET for a printed wall: TWO nozzles (user print
+    finding — two clean perimeters slice crisply where a single bead prints
+    mushy). Segments aim here and degrade toward _bead only in tight
+    rooms."""
+    return 2.0 * nozzle
+
+
+def _tee_width_min(nozzle=0.8):
+    """Smallest available `width` that fits a printable joint: a 2-nozzle
+    neck + one nozzle of shoulder per side."""
+    return 2.0 * nozzle + 2.0 * _bead(nozzle)
+
+
+def _tee_dims(width, depth, nozzle=0.8, clearance=0.1,
+                  back_clearance=None):
+    """MAX-MIN the plan profile inside the available room (`width` across the
+    face, `depth` into the host): returns (neck_w, head_w, depth_used) per
+    the model above. The TENON LIP carries +`back_clearance` over the tenon
+    BAR, because the cavity's lip face lands that far behind it (the lip is
+    the one CONCAVE feature — "the mortise is always larger" is false
+    there, user-caught at 1.45): mortise lip = tenon bar, and the two shear
+    elements balance by construction. `back_clearance` (default =
+    `clearance`) is the DEPTH-FACE gap — BOTH the lip↔head-back pair and
+    the head-front↔cavity-back pair run at it (fiber-filled filaments bind
+    on the depth sandwich; see joint_clearances) — and the depth allocation
+    runs on it so every wall keeps its tier size. Unused room stays host
+    material. Raises when the room can't fit a printable joint."""
+    b = _bead(nozzle)
+    c = abs(clearance)
+    bc = c if back_clearance is None else abs(back_clearance)
+    wmin = _tee_width_min(nozzle)
     if width < wmin - 1e-9:
         raise ValueError(f"width {width:.3f} is below the printable minimum "
-                         f"{wmin:.3f} mm (a 2-nozzle neck + a nozzle of shoulder "
-                         "per side) — give the joint more room, or use a finer nozzle")
-    neck = min(0.6 * width, _DT_SHEAR_RATIO * depth)
-    if neck < 2.0 * nozzle - 1e-9:
-        raise ValueError(f"depth {depth:.3f} is too shallow: the balanced neck "
-                         f"{neck:.3f} drops under 2 beads ({2 * nozzle:.2f}) — "
-                         "deepen the mortise")
-    o = max(nozzle, neck / _DT_BEAR_FRAC)
+                         f"{wmin:.3f} mm (a 2-nozzle neck + a nozzle of "
+                         "shoulder per side) — give the joint more room, or use "
+                         "a finer nozzle")
+    if depth < 2.0 * b + bc - 1e-9:
+        raise ValueError(f"depth {depth:.3f} is too shallow for the T profile: "
+                         f"no room for a one-bead MORTISE lip + a one-bead head "
+                         f"bar + the lip's depth-face clearance "
+                         f"(2 × {b:.2f} + {bc:.2f}) — deepen the mortise")
+    shear_room = (depth - bc) / 2.0             # per shear element
+    neck = min(0.6 * width, _DT_SHEAR_RATIO * shear_room)
+    neck = min(max(neck, 2.0 * nozzle), width - 2.0 * b)
+    # prefer QUALITY-TIER shoulders over surplus neck (the neck's own floor
+    # still wins on a truly tight width) — this is what makes the quality
+    # bounding box (_tee_box_min(quality=True)) actually deliver ≥
+    # 2·nozzle EVERYWHERE on both halves
+    neck = max(min(neck, width - 2.0 * _bead_pref(nozzle)), 2.0 * nozzle)
+    o = min((width - neck) / 2.0,
+            max(neck / _DT_BEAR_FRAC, _bead_pref(nozzle)))
     head = neck + 2.0 * o
-    if head > width + 1e-9:                     # nozzle-floored shoulders on a tight width
-        neck = width - 2.0 * nozzle
-        o = nozzle
-        head = width
-    depth_used = neck / _DT_SHEAR_RATIO
+    bar = max(min(_bead_pref(nozzle), shear_room),
+              min(neck / _DT_SHEAR_RATIO, shear_room))
+    depth_used = 2.0 * bar + bc                 # tenon lip = bar + back_clearance
     return neck, head, depth_used
 
 
-def dovetail_height(width, depth, nozzle=0.8, clearance=0.1):
+def _tee_box_min(nozzle=0.8, clearance=0.1, quality=False,
+                     back_clearance=None):
+    """The smallest (width, depth) BOUNDING BOX whose joint has NO geometry —
+    on the TENON or the MORTISE — under the tier size: nozzle (hard floor,
+    quality=False) or 2·nozzle (quality floor, quality=True). Overhang/
+    bridge features are excluded from the rule everywhere in the library —
+    they are intentionally one nozzle. Width: neck (≥ 2·nozzle either tier)
+    + a shoulder per side; depth: head bar + MORTISE lip (each at tier) +
+    the lip's DEPTH-FACE clearance (the tenon lip pre-grows by
+    `back_clearance`, default = `clearance`, so the cavity's lip stays at
+    tier)."""
+    seg = _bead_pref(nozzle) if quality else _bead(nozzle)
+    bc = abs(clearance) if back_clearance is None else abs(back_clearance)
+    return (2.0 * nozzle + 2.0 * seg, 2.0 * seg + bc)
+
+
+def _tee_height(width, depth, nozzle=0.8, clearance=0.1,
+                    back_clearance=None):
     """Protrusion past the mating plane (what the mortise host must actually
-    swallow — depth_used, NOT the full available depth), clearance included."""
-    return dovetail_dims(width, depth, nozzle)[2] + clearance
+    swallow — depth_used, NOT the full available depth), clearance included.
+    `back_clearance` (≥ clearance; see joint_clearances) is the depth-face
+    gap: it sizes the profile's depth allocation AND the cavity's extra
+    back-wall depth — fiber-filled depth-face relief."""
+    bc = abs(clearance) if back_clearance is None else abs(back_clearance)
+    return _tee_dims(width, depth, nozzle, clearance, bc)[2] + bc
 
 
-def _dovetail_profile(width, depth, nozzle, back):
-    """Closed (x, y) plan-view points for the TENON: optimized neck at the
-    mating plane (x=0), head at x=depth_used, `back` extension behind the plane
-    (tenon root / mortise opening drop)."""
-    neck_w, head_w, d_used = dovetail_dims(width, depth, nozzle)
+def _tee_profile(width, depth, nozzle, back, clearance,
+                      back_clearance=None):
+    """Closed (x, y) plan-view points for the TENON: the SQUARE-SHOULDERED T
+    — optimized neck through the mating plane (x=0), the LIP step (= bar +
+    back_clearance, so the mortise's lip face lands a full depth-face gap
+    behind it at the bar's size), then the parallel-sided head bar out to
+    depth_used. Every corner is 90°: the nozzle rounds tenon and mortise
+    corners COMPATIBLY (the angled dovetail's acute corners rounded into
+    interference). `back` = extension behind the plane (tenon root /
+    mortise opening drop)."""
+    bc = abs(clearance) if back_clearance is None else abs(back_clearance)
+    neck_w, head_w, d_used = _tee_dims(width, depth, nozzle, clearance, bc)
+    lip = (d_used + bc) / 2.0                    # = bar + back_clearance
     neck, head = neck_w / 2.0, head_w / 2.0
-    return [(-back, -neck), (0.0, -neck), (d_used, -head),
-            (d_used, head), (0.0, neck), (-back, neck)]
+    return [(-back, -neck), (lip, -neck), (lip, -head), (d_used, -head),
+            (d_used, head), (lip, head), (lip, neck), (-back, neck)]
 
 
-def dovetail_tenon(width, depth, length, nozzle=0.8, clearance=0.1, root=1.0):
-    """Dovetail TENON: a plan-view trapezoid prism along +Z (the INSTALL axis),
-    mating plane at x=0, head toward +X, extended `root` behind the plane for
-    volumetric fusion into its host. Both hosts print -Z→+Z; every face is a
-    vertical wall. (`clearance` is applied on the mortise side only; it sits in
-    the signature so slide_joint can pass one set of knobs to both halves.)"""
-    pts = _dovetail_profile(width, depth, nozzle, abs(root))
+def _tee_tenon(width, depth, length, nozzle=0.8, clearance=0.1, root=1.0,
+                   back_clearance=None):
+    """Install-z TENON (square-shouldered T; the name predates the profile
+    swap): a plan-view T prism along +Z (the INSTALL axis), mating plane at
+    x=0, head toward +X, extended `root` behind the plane for volumetric
+    fusion into its host. Both hosts print -Z→+Z; every face is a vertical
+    wall and every corner 90°. (`clearance`/`back_clearance` dilate the
+    mortise side, but they also SIZE the tenon's lip and depth — pass the
+    same values to both halves, as joint does.)"""
+    pts = _tee_profile(width, depth, nozzle, abs(root), clearance,
+                            back_clearance)
     return cq.Workplane("XY").polyline(pts).close().extrude(length)
 
 
-def dovetail_mortise(width, depth, length, nozzle=0.8, clearance=0.1, drop=2.0):
+def _tee_mortise(width, depth, length, nozzle=0.8, clearance=0.1, drop=2.0,
+                     back_clearance=None):
     """Cavity CUTTER — the tenon plan profile DILATED `clearance` per side
-    (mitred → angles preserved) and extended `drop` behind the mating plane so
-    it opens through the host's face. Extrude PAST the host's open Z-end (pass a
-    longer `length` / translate) so the tenon can enter; the far end left inside
-    the host is the hard stop."""
-    pts = _dovetail_profile(width, depth, nozzle, abs(drop))
+    (mitred → the square corners stay square) and extended `drop` behind the
+    mating plane so it opens through the host's face. The dilation THINS the
+    cavity's lip by `clearance`; the tenon's lip is pre-grown by the same
+    amount, so the printed mortise lip is a full bar-sized wall.
+    `back_clearance` (≥ clearance) opens the DEPTH-FACE gaps to its value on
+    BOTH pairs — the cavity's back wall moves deeper AND its lip face drops
+    further behind the tenon's (pre-grown) lip — the relief fiber-filled
+    filaments need to slide (see joint_clearances). The LATERAL faces keep
+    `clearance`, and because the tenon's lip and depth box are sized on
+    `back_clearance` too, every printed wall on both halves keeps its tier
+    size. Extrude PAST the host's open Z-end (pass a longer `length` /
+    translate) so the tenon can enter; the far end left inside the host is
+    the hard stop."""
+    c = abs(clearance)
+    bc = c if back_clearance is None else abs(back_clearance)
+    e = bc - c                                    # extra beyond the dilation
+    pts = _tee_profile(width, depth, nozzle, abs(drop), clearance, bc)
+    if e > 1e-12:
+        d_used = _tee_dims(width, depth, nozzle, clearance, bc)[2]
+        lip = (d_used + bc) / 2.0
+        # back wall out by e (dilation adds the remaining c → bc total);
+        # lip step back by e (dilation thins a further c → the cavity lip
+        # face lands bc behind the tenon's, still a full bar-sized wall)
+        pts = [(x + e if abs(x - d_used) < 1e-9 else
+                (x - e if abs(x - lip) < 1e-9 else x), y)
+               for x, y in pts]
     return (cq.Workplane("XY").polyline(pts).close()
-            .offset2D(abs(clearance), "intersection")
+            .offset2D(c, "intersection")
             .extrude(length))
 
 
@@ -536,31 +1051,49 @@ def dovetail_mortise(width, depth, length, nozzle=0.8, clearance=0.1, drop=2.0):
 # about the install axis allowed.
 
 
-def hook_width_min(nozzle=0.8, clearance=0.1):
-    """Smallest edge-to-edge `width` that fits the hook: a nozzle of wall per
-    free edge (post-dilation), a nozzle of stem, a nozzle of hook."""
-    return 4.0 * nozzle + 2.0 * clearance
+def _hook_seg(width, nozzle, clearance):
+    """The hook profile's TIER size — the edge walls, the hook and the
+    minimum stem all print at this: TARGETS 2·nozzle (quality — two clean
+    perimeters, same rule as the T) and degrades toward the one-nozzle
+    hard floor when the edge-to-edge width is tight. EQUAL-SPLIT parity:
+    the stem is the tension link, the hook the shear link, the edge walls
+    the host face's flesh — none is worth starving before the others."""
+    return min(max((width - 2.0 * abs(clearance)) / 4.0, nozzle),
+               2.0 * nozzle)
 
 
-def hook_dims(width, nozzle=0.8, clearance=0.1):
+def _hook_width_min(nozzle=0.8, clearance=0.1, quality=False):
+    """Smallest edge-to-edge `width` that fits the hook at the tier: one
+    tier-segment each of edge wall ×2, stem and hook. quality=False → the
+    one-nozzle hard floor; quality=True → the width at which EVERY segment
+    (both halves — the mortise lip mirrors the tier) reaches 2·nozzle."""
+    seg = 2.0 * nozzle if quality else nozzle
+    return 4.0 * seg + 2.0 * clearance
+
+
+def _hook_dims(width, nozzle=0.8, clearance=0.1):
     """(stem_h, notch_depth, full_depth) of the hook profile inside the
-    edge-to-edge `width`. The hook, lip and edge walls are bead-fixed; ALL
-    surplus width goes into the STEM — the tension link. Raises when the
-    width can't fit a printable joint."""
-    wmin = hook_width_min(nozzle, clearance)
+    edge-to-edge `width`. The hook, lip and edge walls print at the TIER
+    (_hook_seg: 2·nozzle target, one-nozzle floor — was bead-FIXED; the
+    tier grew with the T's, user print finding: sub-1.6 TPU rails tear);
+    beyond the quality width ALL surplus goes into the STEM — the tension
+    link. Raises when the width can't fit a printable joint."""
+    wmin = _hook_width_min(nozzle, clearance)
     if width < wmin - 1e-9:
         raise ValueError(f"width {width:.3f} is below the printable minimum "
                          f"{wmin:.3f} mm for the hook (a nozzle each of edge "
                          "wall x2, stem, and hook) — the site is too short "
                          "even for the single-flank profile")
-    stem_h = width - 3.0 * nozzle - 2.0 * clearance
-    return stem_h, nozzle + clearance, 2.0 * nozzle + clearance
+    seg = _hook_seg(width, nozzle, clearance)
+    stem_h = width - 3.0 * seg - 2.0 * clearance
+    return stem_h, seg + clearance, 2.0 * seg + clearance
 
 
-def hook_depth(nozzle=0.8, clearance=0.1):
+def _hook_depth(width, nozzle=0.8, clearance=0.1):
     """Protrusion past the mating plane (what the mortise host must swallow):
-    the bead-fixed full depth + clearance."""
-    return 2.0 * nozzle + 2.0 * clearance
+    the tier-sized full depth + clearance. Width-dependent now — the depth
+    tracks the tier the width affords."""
+    return 2.0 * _hook_seg(width, nozzle, clearance) + 2.0 * clearance
 
 
 def _hook_profile(width, nozzle, clearance, back):
@@ -568,15 +1101,16 @@ def _hook_profile(width, nozzle, clearance, back):
     flare toward +Y, `back` extension behind the mating plane (tenon root /
     mortise opening drop). y=0 is the FACE CENTRE — the free edges sit at
     ±width/2. The mortise (this dilated `clearance`) lands exactly one
-    nozzle inside each edge."""
-    stem_h, d1, d2 = hook_dims(width, nozzle, clearance)
-    y0 = -width / 2.0 + nozzle + clearance       # stem bottom
+    tier-segment inside each edge."""
+    stem_h, d1, d2 = _hook_dims(width, nozzle, clearance)
+    seg = d1 - clearance                         # the tier the width affords
+    y0 = -width / 2.0 + seg + clearance          # stem bottom
     y1 = y0 + stem_h                             # stem top = the lip's seat
-    y2 = y1 + nozzle                             # hook top
+    y2 = y1 + seg                                # hook top
     return [(-back, y0), (d2, y0), (d2, y2), (d1, y2), (d1, y1), (-back, y1)]
 
 
-def hook_tenon(width, length, nozzle=0.8, clearance=0.1, root=1.0):
+def _hook_tenon(width, length, nozzle=0.8, clearance=0.1, root=1.0):
     """Single-flank hook TENON: a plan-view prism along +Z (the INSTALL
     axis), mating plane at x=0, hook toward +Y, extended `root` behind the
     plane for volumetric fusion. `width` = the host face's FULL edge-to-edge
@@ -586,7 +1120,7 @@ def hook_tenon(width, length, nozzle=0.8, clearance=0.1, root=1.0):
     return cq.Workplane("XY").polyline(pts).close().extrude(length)
 
 
-def hook_mortise(width, length, nozzle=0.8, clearance=0.1, drop=2.0):
+def _hook_mortise(width, length, nozzle=0.8, clearance=0.1, drop=2.0):
     """Cavity CUTTER — the hook tenon profile DILATED `clearance` per side
     (mitred; the notch edges dilate INWARD, thinning the lip to exactly one
     nozzle) and extended `drop` behind the mating plane. Extrude PAST the
@@ -607,28 +1141,83 @@ def hook_mortise(width, length, nozzle=0.8, clearance=0.1, drop=2.0):
 #     • tenon 'up',   mortise 'up'   → octagon (both parts print -Z→+Z)
 #     • tenon 'side', mortise 'up'   → ramp+hook dovetail (tenon prints -Y→+Y)
 #   install='z' (slide ∥ print-Z — profile prints as vertical walls):
-#     • tenon 'up',   mortise 'up'   → plain dovetail
+#     • tenon 'up',   mortise 'up'   → the square-shouldered tee
 # Other combinations aren't modelled yet and raise.
 
-# Fit clearance per side, print-VALIDATED (small joints, ~0.8 nozzle). Clearance is
-# print-TESTED, not formulaic (it also creeps up with engagement length), so this
-# holds only measured materials; anything else falls back to the default and should
-# be print-checked (or passed explicitly via `clearance=`).
+# Fit clearance per side, print-VALIDATED (~0.8 nozzle, long-engagement slide
+# joints). Clearance is print-TESTED, not formulaic (it also creeps up with
+# engagement length), so this holds only measured materials; anything else falls
+# back to the default and should be print-checked (or passed explicitly via
+# `clearance=`).
+#
+# FIBER-FILLED filaments (GF/CF — detected from the material name) get DOUBLE
+# clearance on the install-z T's DEPTH faces — BOTH pairs: head-front ↔
+# cavity-back AND lip ↔ head-back (the retention faces): the stiff,
+# rough-surfaced walls bind in the depth sandwich long before the lateral
+# faces do — print finding, retractable-cable-spool wall joint in PETG-GF:
+# lateral 0.15 slid fine, the depth faces needed 0.3. The LATERAL faces keep
+# the table value, and the T's depth allocation runs on the depth gap (tenon
+# lip pre-grows by it), so every printed wall on both halves keeps its tier
+# size — the depth BOX grows instead. The MUSHROOM family applies the same
+# split (user-directed, cable-spool mount rings: the flare z-faces grab):
+# laterals at the base, the 45° flare pair and any capped top backed off by
+# the depth gap. The OCTAGON applies it too (user-directed, same rings),
+# via its own mechanics — the tenon's post and the cavity's waist vertical
+# both grow by the depth gap, opening the seated flare pair by exactly that
+# much while the mortise's printed neck keeps its tier (see _oct_relief).
+# The remaining families (arrow, hook) still use the base value — their
+# fiber behavior is unmeasured; print-check before extending the rule.
+#
+# `fit` picks the tier: "normal" (default) = the print-tested slide fit;
+# "loose" = 2× BOTH values, for joints that must slide with zero effort
+# (frequently-serviced parts, blind assemblies) — retention geometry is
+# unchanged, only the gaps grow.
 _MATERIAL_CLEARANCE = {
-    "PETG-GF": 0.1,
+    "PETG-GF": 0.15,
 }
 _DEFAULT_CLEARANCE = 0.15
+_FIT_FACTORS = {"normal": 1.0, "loose": 2.0}
+
+
+def _is_fiber_filled(material):
+    """GF/CF token anywhere in the material name (e.g. 'PETG-GF', 'PA-CF')."""
+    if not material:
+        return False
+    m = material.upper()
+    return "GF" in m or "CF" in m
+
+
+def joint_clearances(tenon, mortise, fit="normal", override=None):
+    """The library's clearance POLICY — (clearance, back_clearance) for a
+    joint between two PrintSpecs. `clearance` dilates the mortise laterally
+    (every family); `back_clearance` is the install-z T's DEPTH-face gap
+    (both the cavity-back and lip pairs) — 2× the base when either half is
+    fiber-filled (see the table note). `fit="loose"` doubles both.
+    `override` replaces the material-table base (the fiber and fit factors
+    still apply)."""
+    if fit not in _FIT_FACTORS:
+        raise ValueError("fit must be one of %s, got %r"
+                         % (sorted(_FIT_FACTORS), fit))
+    c = _clearance_for(tenon, mortise, override)
+    bc = 2.0 * c if any(_is_fiber_filled(s.material)
+                        for s in (tenon, mortise)) else c
+    k = _FIT_FACTORS[fit]
+    return c * k, bc * k
 
 
 class PrintSpec:
-    """How one half of a joint prints: `nozzle` (mm), `material` (a key into the
-    clearance table, or None), and `facing` — 'up' (the part prints -Z→+Z) or
-    'side' (prints -Y→+Y, on its side)."""
+    """How one half of a joint prints: `nozzle` (mm), `material` (a key into
+    the clearance table, or None), and `facing` — the host's BUILD DIRECTION
+    expressed in the JOINT'S local frame (user insight: the axis alone
+    under-determines a print — the direction along it matters just as much):
+    'up' (builds local -Z→+Z), 'down' (builds local +Z→-Z — the part prints
+    inverted relative to the joint), or 'side' (builds -Y→+Y)."""
     __slots__ = ("nozzle", "material", "facing")
 
     def __init__(self, nozzle=0.8, material=None, facing="up"):
-        if facing not in ("up", "side"):
-            raise ValueError("facing must be 'up' or 'side', got %r" % (facing,))
+        if facing not in ("up", "side", "down"):
+            raise ValueError("facing must be 'up', 'down' or 'side', got %r"
+                             % (facing,))
         if nozzle <= 0:
             raise ValueError("nozzle must be > 0")
         self.nozzle, self.material, self.facing = nozzle, material, facing
@@ -642,33 +1231,64 @@ def _clearance_for(tenon, mortise, override):
     return max(found) if found else _DEFAULT_CLEARANCE
 
 
-# x-slide families share a signature; the dovetail (extra `depth` bound) is
-# dispatched explicitly in _SlideJoint.
+# x-slide families share a signature; the tee (extra `depth` bound) and the
+# hook are dispatched explicitly in Joint.
 _FAMILY_FUNCS = {
-    "octagon":  (octagon_tenon,  octagon_mortise,  octagon_height,  octagon_width_min),
-    "arrow":    (arrow_tenon,    arrow_mortise,    arrow_height,    arrow_width_min),
+    "octagon":  (_octagon_tenon,  _octagon_mortise,  _octagon_height,  _octagon_width_min),
+    "arrow":    (_arrow_tenon,    _arrow_mortise,    _arrow_height,    _arrow_width_min),
 }
 
 
-class _SlideJoint:
-    """Result of `slide_joint`: call `.tenon(root=…)` / `.mortise(drop=…)` for the two
-    solids. Attributes: `.family` ('octagon'|'arrow'|'dovetail'|'hook'), `.install` ('x'|'z'),
-    `.height` (how deep the mortise host must actually be), `.width_min` (the
-    printable floor), `.clearance`, `.nozzle` (the coarser of the two halves),
-    and `.depth` (dovetail only: the AVAILABLE depth bound)."""
+class Joint:
+    """The two halves of one joint — the result of `joint`. Call
+    `.tenon(root=…)` / `.mortise(drop=…)` for the solids (`.tenon_arc` /
+    `.mortise_arc` when the install path is a rotation). Metadata:
+    `.height` (how deep the mortise host must actually be), `.width_min`
+    (this site's printable floor), `.install` (signed — the tenon seats
+    travelling +install; `.install_axis`/`.install_sign` split it),
+    `.clearance` / `.back_clearance`,
+    `.nozzle` (the coarser half — it drives the minimum feature), `.dims`
+    (the picked profile's numbers), and `.family` — which internal profile
+    the optimizer chose. `.family` is INFORMATIONAL (labels, debugging);
+    it is never an input and callers must not branch on it to change
+    geometry."""
     def __init__(self, width, length, tenon, mortise, clearance, install, depth,
-                 bounded=False):
-        if install not in ("x", "z"):
-            raise ValueError("install must be 'x' or 'z', got %r" % (install,))
-        if bounded and install != "z":
-            raise ValueError("bounded=True is modelled for install='z' only "
-                             "(the x-slide families assume host material past "
+                 bounded=False, back_clearance=None, through=False,
+                 stem=None):
+        self.back_clearance = (clearance if back_clearance is None
+                               else back_clearance)
+        self.through = through
+        self.stem = stem
+        if install not in ("+x", "-x", "+z", "-z"):
+            raise ValueError(
+                "install must be a SIGNED axis: '+x', '-x', '+z' or '-z' "
+                "(got %r). The sign is the SEATING direction — the tenon "
+                "travels along +install into the cavity and the STOP closes "
+                "the far (+install) end; a bare axis under-specifies the "
+                "site (user's rule: a stop makes every install one-way)."
+                % (install,))
+        self.install, self.install_axis = install, install[1]
+        self.install_sign = 1.0 if install[0] == "+" else -1.0
+        if bounded and self.install_axis != "z":
+            raise ValueError("bounded=True is modelled for install ±z only "
+                             "(the x-slide profiles assume host material past "
                              "the profile — add the variant if a site needs it)")
         self.width, self.length, self.clearance = width, length, clearance
-        self.install = install
         self.nozzle = max(tenon.nozzle, mortise.nozzle)   # coarser drives the min feature
         kind = (tenon.facing, mortise.facing)
-        if install == "z":
+        if stem is not None and not (self.install_axis == "x"
+                                     and kind == ("up", "up")
+                                     and not through and not bounded):
+            raise ValueError(
+                "stem= (the host-matching override) is modelled for the "
+                "up+up install-x OCTAGON only — every other profile computes "
+                "its stem from the width")
+        if through and (self.install_axis != "x" or kind != ("up", "up")):
+            raise NotImplementedError(
+                "through=True (the mortise cavity may exit the host's far "
+                "face) is modelled for install ±x up+up sites — got tenon "
+                "'%s' + mortise '%s', install '%s'" % (kind + (install,)))
+        if self.install_axis == "z":
             # Slide axis ∥ print-Z: the profile lies in the plan plane, so its
             # faces are vertical printed walls — but ONLY for hosts printing
             # -Z→+Z. A side-printed host would see the profile's -Y-normal
@@ -680,115 +1300,374 @@ class _SlideJoint:
                     "overhang the plan profile" % kind)
             if bounded:
                 # EDGE-BOUNDED site: `width` = the face's FULL extent between
-                # free edges, walls included — the GEOMETRY ADAPTS to the
-                # room: symmetric dovetail while it still fits inside the
-                # reserved edge walls, single-flank HOOK when it doesn't.
+                # free edges, walls included. The library sizes BOTH candidate
+                # profiles for the room — the symmetric TEE inside reserved
+                # edge walls, and the single-flank HOOK spending the scarce
+                # width on one fat stem — and keeps the one whose THINNEST
+                # printed wall lands on the higher tier. Tie → the tee: it
+                # retains both pull directions, the hook only one. (The old
+                # rule took the tee whenever it merely FIT, which handed
+                # roomy-width/shallow-depth sites a sub-tier tee while the
+                # hook sat at full quality.)
                 usable = width - 2.0 * (self.nozzle + self.clearance)
-                if usable >= dovetail_width_min(self.nozzle) - 1e-9:
-                    self.family = "dovetail"
-                    self.width = usable          # profile stays edge-walled
-                    self.depth = usable / 2.0 if depth is None else depth
-                    self.height = dovetail_height(usable, self.depth,
-                                                  self.nozzle, self.clearance)
-                    self.width_min = dovetail_width_min(self.nozzle)
+                t_tier, t_depth = -1.0, None
+                if usable >= _tee_width_min(self.nozzle) - 1e-9:
+                    t_depth = usable / 2.0 if depth is None else depth
+                    try:
+                        n, h, du = _tee_dims(usable, t_depth, self.nozzle,
+                                             self.clearance,
+                                             self.back_clearance)
+                        t_tier = min(n, (h - n) / 2.0,
+                                     (du - self.back_clearance) / 2.0)
+                    except ValueError:
+                        t_tier = -1.0
+                h_tier = -1.0
+                if width >= _hook_width_min(self.nozzle,
+                                            self.clearance) - 1e-9:
+                    hook_h = _hook_depth(width, self.nozzle, self.clearance)
+                    if depth is None or hook_h <= depth + 1e-9:
+                        h_tier = _hook_seg(width, self.nozzle, self.clearance)
+                if t_tier < 0.0 and h_tier < 0.0:
+                    _hook_dims(width, self.nozzle, self.clearance)  # raises the floor story
+                if h_tier > t_tier + 1e-9:
+                    self.family = "hook"
+                    self.height = _hook_depth(width, self.nozzle,
+                                              self.clearance)
+                    self.width_min = _hook_width_min(self.nozzle,
+                                                     self.clearance)
                     return
-                if depth is not None:
-                    raise ValueError("the hook's depth is bead-fixed — drop "
-                                     "the `depth` bound for this site")
-                self.family = "hook"
-                hook_dims(width, self.nozzle, self.clearance)   # width floor
-                self.height = hook_depth(self.nozzle, self.clearance)
-                self.width_min = hook_width_min(self.nozzle, self.clearance)
+                self.family = "tee"
+                self.width = usable              # profile stays edge-walled
+                self.depth = t_depth
+                self.height = _tee_height(usable, self.depth, self.nozzle,
+                                          self.clearance, self.back_clearance)
+                self.width_min = _tee_width_min(self.nozzle)
                 return
-            self.family = "dovetail"
+            self.family = "tee"
             # `depth` = AVAILABLE room past the mating plane; the optimizer may
             # use less (strength parity). Default: half the available width.
             self.depth = width / 2.0 if depth is None else depth
-            self.height = dovetail_height(width, self.depth, self.nozzle, self.clearance)
-            self.width_min = dovetail_width_min(self.nozzle)
+            self.height = _tee_height(width, self.depth, self.nozzle,
+                                      self.clearance, self.back_clearance)
+            self.width_min = _tee_width_min(self.nozzle)
             return
         if kind == ("up", "up"):
-            self.family = "octagon"
+            # with a THROUGH mortise there is nothing to close printably —
+            # the shorter flat-top mushroom beats the octagon (see the
+            # mushroom section note); `depth` = how far the cavity must run
+            # past the mating plane to exit the host's far face
+            self.family = "mushroom" if through else "octagon"
         elif kind == ("side", "up"):
             self.family = "arrow"
+        elif kind == ("up", "down"):
+            self.family = "mushroom"
         else:
             raise NotImplementedError(
-                "no joint for tenon '%s' + mortise '%s' yet (have up+up, side+up) — "
-                "add the variant the way threads.py grew" % kind)
-        if depth is not None and self.family != "octagon":
-            raise ValueError("depth on install='x' applies only to the octagon "
-                             "(its profile HEIGHT past the mating plane); the "
-                             "arrow's height is width-locked")
+                "no joint for tenon '%s' + mortise '%s' yet (have up+up, "
+                "side+up, up+down) — add the variant the way threads.py "
+                "grew" % kind)
+        if depth is not None and not (self.family == "octagon"
+                                      or (self.family == "mushroom"
+                                          and through)):
+            raise ValueError("depth on install='x' applies only to the up+up "
+                             "octagon site (profile HEIGHT past the mating "
+                             "plane) and the THROUGH mushroom (cavity run to "
+                             "the exit); the other x-profiles are width-locked")
+        if through and depth is None:
+            raise ValueError("a THROUGH mortise needs depth = the host's "
+                             "thickness past the mating plane (+ exit "
+                             "margin) — the cavity must know how far to run")
         self.depth = depth
+        if self.family == "mushroom":
+            # tenon swallow: the MINIMAL profile — a through cavity runs
+            # deeper (self.depth), but the tenon itself never grows for it.
+            # A split back_clearance adds the z-relief post growth (the
+            # octagon's shared mechanics — the cavity neck keeps its tier).
+            self.height = _mushroom_height(self.width, self.nozzle,
+                                           self.clearance,
+                                           back_clearance=self.back_clearance)
+            self.width_min = _mushroom_width_min(self.nozzle, self.clearance)
+            return
         if self.family == "octagon":
             # depth = room past the mating plane; extra over the width-driven
             # minimum grows the profile's two verticals evenly (max strength
-            # in the given bounds) — see _octagon_profile
-            self.height = octagon_height(self.width, self.nozzle,
-                                         self.clearance, depth)
-            self.width_min = octagon_width_min(self.nozzle)
+            # in the given bounds) — see _octagon_profile. A split
+            # back_clearance adds the z-relief post growth to the swallow.
+            # `stem` (host-matching override, WIDER only) is validated in
+            # the profile; the height is silhouette-invariant under it.
+            self.height = _octagon_height(self.width, self.nozzle,
+                                          self.clearance, depth,
+                                          back_clearance=self.back_clearance,
+                                          stem_w=self.stem)
+            self.width_min = _octagon_width_min(self.nozzle)
             return
         _, _, f_height, f_wmin = _FAMILY_FUNCS[self.family]
         self.height = f_height(self.width, self.nozzle, self.clearance)
         self.width_min = f_wmin(self.nozzle)
 
-    def tenon(self, root=1.0):
-        if self.family == "hook":
-            return hook_tenon(self.width, self.length, self.nozzle,
-                              self.clearance, root)
-        if self.family == "dovetail":
-            return dovetail_tenon(self.width, self.depth, self.length,
-                                  self.nozzle, self.clearance, root)
-        if self.family == "octagon":
-            return octagon_tenon(self.width, self.length, self.nozzle,
-                                 self.clearance, root, height=self.depth)
-        return _FAMILY_FUNCS[self.family][0](
-            self.width, self.length, self.nozzle, self.clearance, root)
+    def _len(self, length):
+        L = self.length if length is None else length
+        if L is None:
+            raise ValueError("this joint was built without a `length` — pass "
+                             "length=… here or at joint(…)")
+        return L
 
-    def mortise(self, drop=2.0, pocket=False):
+    @property
+    def dims(self):
+        """The picked profile's numbers (mm) — INFORMATIONAL, for derived
+        geometry alongside the joint (rig print supports, reliefs). Keys
+        vary with the profile; never branch on them to change behavior."""
+        if self.family == "tee":
+            n, h, du = _tee_dims(self.width, self.depth, self.nozzle,
+                                 self.clearance, self.back_clearance)
+            return {"neck": n, "head": h, "depth_used": du,
+                    "lip": (du + self.back_clearance) / 2.0}
+        if self.family == "hook":
+            stem, d1, d2 = _hook_dims(self.width, self.nozzle, self.clearance)
+            return {"stem": stem, "notch_depth": d1, "full_depth": d2}
+        return {"height": self.height}
+
+    @property
+    def cavity_depth(self):
+        """The z-extent the mortise cavity swallows above the mating
+        plane — the ONE number every mortise host must clear, which the
+        height/clearance pair under-specifies: the octagon's uniform
+        dilation adds `clearance` on top of its (relief-inclusive)
+        height, while the mushroom's split-clearance cavity tops out at
+        height + back_clearance. Callers were branching on family by
+        hand to know which rule applied (cable-spool review) — read
+        this instead. x-slide bulb families only; the install-z
+        families publish their depths via `dims`."""
+        if self.family == "mushroom":
+            split = abs(self.back_clearance - self.clearance) > 1e-9
+            return self.height + (self.back_clearance if split
+                                  else self.clearance)
+        if self.family == "octagon":
+            return self.height + self.clearance
+        raise NotImplementedError(
+            "cavity_depth is modelled for the octagon/mushroom "
+            "families — the z-swallow question the x-slide sites ask")
+
+    def tenon(self, root=1.0, length=None):
+        """The tenon solid (union into its host; `root` sinks below the
+        mating plane for volumetric fusion). `length` overrides the
+        engagement length from joint() for this solid only."""
+        L = self._len(length)
+        if self.family == "mushroom":
+            return _mushroom_tenon(self.width, L, self.nozzle,
+                                   self.clearance, root,
+                                   back_clearance=self.back_clearance)
+        if self.family == "hook":
+            return _hook_tenon(self.width, L, self.nozzle,
+                               self.clearance, root)
+        if self.family == "tee":
+            return _tee_tenon(self.width, self.depth, L,
+                              self.nozzle, self.clearance, root,
+                              self.back_clearance)
+        if self.family == "octagon":
+            return _octagon_tenon(self.width, L, self.nozzle,
+                                  self.clearance, root, height=self.depth,
+                                  back_clearance=self.back_clearance,
+                                  stem_w=self.stem)
+        return _FAMILY_FUNCS[self.family][0](
+            self.width, L, self.nozzle, self.clearance, root)
+
+    def mortise(self, drop=2.0, pocket=False, length=None):
+        """The cavity CUTTER (dilated by the clearances; `drop` opens it
+        through the host's face). `pocket=True` cuts the entry-pocket
+        variant (up+up install='x' site only). `length` overrides the
+        engagement length from joint() for this solid only."""
+        L = self._len(length)
         if pocket:
+            if self.family == "mushroom":
+                return _mushroom_mortise(self.width, L, self.nozzle,
+                                         self.clearance, drop, pocket=True,
+                                         height=(self.depth if self.through
+                                                 else None),
+                                         back_clearance=self.back_clearance)
             if self.family != "octagon":
                 raise NotImplementedError(
-                    "pocket mortises are modelled for the octagon family only "
-                    "(the dovetail's install axis IS z — no pocket needed; the "
-                    "arrow's would need its own profile)")
-            return octagon_mortise(self.width, self.length, self.nozzle,
-                                   self.clearance, drop, pocket=True,
-                                   height=self.depth)
+                    "pocket mortises are modelled for the install='x' up+up "
+                    "and up+down sites only (install='z' needs no pocket — "
+                    "its install axis IS the entry; the side-printed "
+                    "tenon's would need its own profile)")
+            return _octagon_mortise(self.width, L, self.nozzle,
+                                    self.clearance, drop, pocket=True,
+                                    height=self.depth,
+                                    back_clearance=self.back_clearance,
+                                    stem_w=self.stem)
+        if self.family == "mushroom":
+            return _mushroom_mortise(self.width, L, self.nozzle,
+                                     self.clearance, drop,
+                                     height=(self.depth if self.through
+                                             else None),
+                                     back_clearance=self.back_clearance)
         if self.family == "hook":
-            return hook_mortise(self.width, self.length, self.nozzle,
-                                self.clearance, drop)
-        if self.family == "dovetail":
-            return dovetail_mortise(self.width, self.depth, self.length,
-                                    self.nozzle, self.clearance, drop)
+            return _hook_mortise(self.width, L, self.nozzle,
+                                 self.clearance, drop)
+        if self.family == "tee":
+            return _tee_mortise(self.width, self.depth, L,
+                                self.nozzle, self.clearance, drop,
+                                self.back_clearance)
         if self.family == "octagon":
-            return octagon_mortise(self.width, self.length, self.nozzle,
-                                   self.clearance, drop, height=self.depth)
+            return _octagon_mortise(self.width, L, self.nozzle,
+                                    self.clearance, drop, height=self.depth,
+                                    back_clearance=self.back_clearance,
+                                    stem_w=self.stem)
         return _FAMILY_FUNCS[self.family][1](
-            self.width, self.length, self.nozzle, self.clearance, drop)
+            self.width, L, self.nozzle, self.clearance, drop)
+
+    def tenon_arc(self, radius, sweep_deg, root=1.0, height=None):
+        """ROTATIONAL-install tenon: the profile placed at `radius` from the
+        Z axis and revolved `sweep_deg` about it — for parts already located
+        on a shared axis, where the one free install motion is rotation.
+        The sweep replaces `length` (which may be None at joint()).
+        `height` (THROUGH mushroom sites only): grow the tenon past its
+        minimal profile toward the cavity's exit — the extra rides the
+        waist walls (more flank bearing, fuller cavity); keep it short of
+        the host's far face so nothing pokes out."""
+        if self.family == "mushroom":
+            if height is not None and not self.through:
+                raise ValueError("tenon height override is modelled for the "
+                                 "THROUGH mushroom site only")
+            return _mushroom_tenon_arc(self.width, radius, sweep_deg,
+                                       self.nozzle, self.clearance, root,
+                                       height=height,
+                                       back_clearance=self.back_clearance)
+        if height is not None:
+            raise ValueError("tenon height override is modelled for the "
+                             "mushroom sites only (the octagon sizes "
+                             "from `depth` at joint())")
+        if self.family != "octagon":
+            raise NotImplementedError(
+                "rotational (arc) installs are modelled for the up+up "
+                "install='x' sites only (octagon, and the THROUGH mushroom)")
+        return _octagon_tenon_arc(self.width, radius, sweep_deg, self.nozzle,
+                                  self.clearance, root, height=self.depth,
+                                  back_clearance=self.back_clearance,
+                                  stem_w=self.stem)
+
+    def mortise_arc(self, radius, sweep_deg, drop=2.0):
+        """Cavity CUTTER matching tenon_arc — sweep it past the host's open
+        face on the entry side; the far angular end left inside is the
+        stop."""
+        if self.family == "mushroom":
+            return _mushroom_mortise_arc(self.width, radius, sweep_deg,
+                                         self.nozzle, self.clearance, drop,
+                                         height=(self.depth if self.through
+                                                 else None),
+                                         back_clearance=self.back_clearance)
+        if self.family != "octagon":
+            raise NotImplementedError(
+                "rotational (arc) installs are modelled for the up+up "
+                "install='x' sites only (octagon, and the THROUGH mushroom)")
+        return _octagon_mortise_arc(self.width, radius, sweep_deg, self.nozzle,
+                                    self.clearance, drop, height=self.depth,
+                                    back_clearance=self.back_clearance,
+                                    stem_w=self.stem)
+
+    def crossing(self, radius, arm_w, tenon_l=None, seat=None, over=1.0,
+                 hand="cw"):
+        """The rotational-install SITE builder: this joint crossing a
+        radial ARM at `radius` (arm width `arm_w` mm across the crossing).
+        Returns an ArcCrossing — the tenon/mortise arc solids pre-placed
+        for an arm centred on plan angle 0, in the arrangement the
+        cable-spool ring joints print-validated: tenon flush at the entry
+        face spanning `tenon_l` (default arm_w/2 — the 50% rule), cavity
+        + `seat` at the stop end + `over` past the entry (all mm,
+        converted to arc angles at `radius`). `hand` = the tenon's seating
+        rotation ("cw": entry at the arm's CCW face; "ccw": the mirror) —
+        CHOOSE IT so the site's sustained loads press toward the stop.
+        Arc-capable families only (the up+up octagon and the up+down /
+        through mushroom)."""
+        return ArcCrossing(self, radius, arm_w, tenon_l, seat, over, hand)
 
 
-def slide_joint(width, length, tenon, mortise, clearance=None, install="x",
-                depth=None, bounded=False):
-    """Build a printable slide joint sized to the AVAILABLE room (`width`,
-    `length`, and `depth` — the room past the mating plane: install='z' sizes
-    the dovetail with it, install='x' octagons grow their VERTICALS into it
-    for max strength; the octagon may not use less than given), the way
-    each half prints (`tenon`, `mortise`: PrintSpec), and the INSTALL axis — the
-    one direction deliberately left without retention. `install='x'` (default)
-    slides ⊥ print-Z (facings pick octagon or arrow); `install='z'` slides ∥
-    print-Z (both hosts must print 'up'; a plain dovetail whose plan profile is
-    OPTIMIZED for strength inside the room — it may use less than the room where
-    more adds nothing). `bounded=True` (install='z' only) declares an
-    EDGE-BOUNDED site: `width` is the mating face's FULL extent between free
-    edges, walls included — the geometry then ADAPTS to the room: the
-    symmetric dovetail while it fits inside the reserved edge walls, the
-    single-flank HOOK when the face is too short for it. Material picks the
-    clearance (override with `clearance=`). Returns a _SlideJoint with
-    `.tenon(root)` / `.mortise(drop)`."""
-    return _SlideJoint(width, length, tenon, mortise,
-                       _clearance_for(tenon, mortise, clearance), install, depth,
-                       bounded)
+def joint(width, length, tenon, mortise, clearance=None, install="+x",
+          depth=None, bounded=False, fit="normal", through=False,
+          stem=None, back_clearance=None):
+    """THE joinery entrypoint. Names name the HALVES (`tenon`, `mortise`) —
+    never the shape: describe the SITE and the library builds the optimal
+    printable geometry for it. A site is:
+
+      • how each half PRINTS — `tenon` / `mortise` are PrintSpecs (nozzle,
+        material, print orientation);
+      • the INSTALL direction — a SIGNED axis ('+x'/'-x'/'+z'/'-z'):
+        the one motion deliberately left without shape retention, with
+        its sign fixed by the STOP (user's rule — a stop makes every
+        install one-way). The tenon travels along +install to seat; the
+        caller closes the mortise's far (+install) end as the stop and
+        opens/overshoots the −install end as the entry. ±x slides ⊥
+        print-Z; ±z slides ∥ print-Z (both hosts must print 'up'; the
+        profile lies in the plan plane as vertical walls). For a
+        rotational install path use `.tenon_arc` / `.mortise_arc` on the
+        result (up+up sites);
+      • the BOUNDING BOX the joint may occupy — `width` across the face,
+        `length` of engagement (may be None when only arc solids will be
+        drawn, or overridden per solid), `depth` past the mating plane
+        (optional; the optimizer may use less where more adds nothing).
+        `bounded=True` (install='z') declares the width EDGE-BOUNDED: the
+        face's FULL extent between free edges, walls included — the library
+        then picks whichever internal profile reaches the higher wall tier
+        in that room. `through=True` (install ±x, up+up) declares the
+        MORTISE host's far face open/cuttable: the cavity may exit it, so
+        no closure bridge is needed — the site takes the flat-top mushroom
+        (shorter swallow) instead of the octagon, with `depth` = the
+        host's thickness past the mating plane plus an exit margin.
+        `stem=` (up+up install-x octagon only): HOST-MATCHING stem
+        override — WIDER than the computed width/2 optimum, so the stem
+        can equal the bar it hangs from (user-sanctioned deviation,
+        cable-spool mount rings). Silhouette-invariant: the 45° shoulder
+        gives up the difference and the waist vertical takes it; the
+        shoulder is floored at one nozzle per side.
+
+    MATERIALS pick the clearances (policy: joint_clearances — fiber-filled
+    halves get a doubled depth-face gap; override the base with
+    `clearance=`, and the depth-face gap alone with `back_clearance=` —
+    the print-proven move for SHORT joints that must stay put: the
+    cable-spool lid ran its z-sandwich at 0.20 under the GF 0.30 policy
+    after seating too loose); `fit` picks the tier: "normal" (print-tested slide) or
+    "loose" (2× everything — for joints that must slide with zero effort,
+    e.g. a part serviced often, or one mated blind). Returns a Joint:
+    `.tenon(root)` /
+    `.mortise(drop)` solids plus sizing metadata (`.height`, `.width_min`,
+    `.dims`). Use `joint_box_min` for "how much room would a joint need
+    here" before committing geometry."""
+    c, bc = joint_clearances(tenon, mortise, fit, clearance)
+    if back_clearance is not None:
+        bc = back_clearance
+    return Joint(width, length, tenon, mortise, c, install, depth,
+                 bounded, back_clearance=bc, through=through, stem=stem)
+
+
+def joint_box_min(tenon, mortise, install="+x", bounded=False, quality=False,
+                  fit="normal", clearance=None, through=False):
+    """The smallest (width, depth) BOUNDING BOX a joint needs at this site —
+    the sizing counterpart of `joint` (same site inputs, no geometry).
+    quality=False → the one-nozzle hard floor; quality=True → the width at
+    which every printed wall on both halves reaches the two-nozzle quality
+    tier. `depth` in the result is what the mortise host must swallow at
+    that width (None where the site's profile takes no depth bound)."""
+    c, bc = joint_clearances(tenon, mortise, fit, clearance)
+    nz = max(tenon.nozzle, mortise.nozzle)
+    axis = install[1] if install[:1] in ("+", "-") else install
+    if axis == "z":
+        if bounded:
+            w = _hook_width_min(nz, c, quality)
+            return w, _hook_depth(w, nz, c)
+        return _tee_box_min(nz, c, quality, bc)
+    kind = (tenon.facing, mortise.facing)
+    if kind == ("up", "up"):
+        if through:
+            return _mushroom_width_min(nz, c), None
+        return _octagon_width_min(nz, c), None
+    if kind == ("side", "up"):
+        return _arrow_width_min(nz), None
+    if kind == ("up", "down"):
+        return _mushroom_width_min(nz, c), None
+    raise NotImplementedError(
+        "no joint for tenon '%s' + mortise '%s' yet (have up+up, side+up, "
+        "up+down)" % kind)
 
 
 # ── Self-test: geometry gates (run `py -3.12 joinery.py`) ────────────────────
@@ -808,9 +1687,9 @@ if __name__ == "__main__":
     # ── ramp+hook dovetail (width-based): tenon prints -Y→+Y, mortise -Z→+Z ──
     print("-- arrow (ramp+hook) --")
     AW = 5.6                                      # width; barb/neck = 1.6/3.2 at nozzle 0.8
-    ten = arrow_tenon(AW, 12, clearance=CLR).translate((6.3, 0, 0))    # x 6.3..18.3
+    ten = _arrow_tenon(AW, 12, clearance=CLR).translate((6.3, 0, 0))    # x 6.3..18.3
     host = (cq.Workplane("XY").box(26, 24, 8, centered=(False, True, False))
-            .cut(arrow_mortise(AW, 22.6, clearance=CLR).translate((-4, 0, 0))))  # stop at +x
+            .cut(_arrow_mortise(AW, 22.6, clearance=CLR).translate((-4, 0, 0))))  # stop at +x
     n = len(ten.val().Solids())
     if n != 1:
         fails.append(f"arrow: tenon is {n} solids")
@@ -832,7 +1711,7 @@ if __name__ == "__main__":
         if not ok:
             fails.append(f"arrow: {label} = {v:.3f}")
     # bridge cap on the MORTISE = one nozzle (measured off the cutter's top face)
-    am = arrow_mortise(AW, 6, clearance=CLR)
+    am = _arrow_mortise(AW, 6, clearance=CLR)
     atop = max(am.val().Faces(), key=lambda f: f.Center().z)
     arw = atop.BoundingBox().ylen
     ok = abs(arw - 0.8) < 1e-3
@@ -843,11 +1722,11 @@ if __name__ == "__main__":
     # ── octagon ("stop-sign") joint: both hosts print -Z→+Z ──
     print("-- octagon --")
     WIDTH, NZ, CLR2 = 6.0, 0.8, 0.1
-    Hh = octagon_height(WIDTH, NZ)
-    oten = octagon_tenon(WIDTH, 14, nozzle=NZ, clearance=CLR2)      # x 0..14
+    Hh = _octagon_height(WIDTH, NZ)
+    oten = _octagon_tenon(WIDTH, 14, nozzle=NZ, clearance=CLR2)      # x 0..14
     ohost = (cq.Workplane("XY").box(20, WIDTH + 8, Hh + 6, centered=(False, True, True))
              .translate((0, 0, Hh / 2.0))                          # z -3 .. Hh+3
-             .cut(octagon_mortise(WIDTH, 22, nozzle=NZ, clearance=CLR2, drop=3)
+             .cut(_octagon_mortise(WIDTH, 22, nozzle=NZ, clearance=CLR2, drop=3)
                   .translate((-1, 0, 0))))                         # through-slot in x
     n_solids = len(oten.val().Solids())
     if n_solids != 1:
@@ -872,7 +1751,7 @@ if __name__ == "__main__":
     # still located, slide axis still free — an entry feature, not a retainer.
     phost = (cq.Workplane("XY").box(20, WIDTH + 8, Hh + 6, centered=(False, True, True))
              .translate((0, 0, Hh / 2.0))
-             .cut(octagon_mortise(WIDTH, 22, nozzle=NZ, clearance=CLR2, drop=3,
+             .cut(_octagon_mortise(WIDTH, 22, nozzle=NZ, clearance=CLR2, drop=3,
                                   pocket=True).translate((-1, 0, 0))))
     pchecks = [
         ("pocket seated",       (0, 0, 0),  "=0"),
@@ -889,8 +1768,8 @@ if __name__ == "__main__":
             fails.append(f"octagon: {label} = {v:.3f}")
     # the ROOF CAP is on the MORTISE — exactly one nozzle at any width (measured off
     # the cutter's top face — this is the face the printer actually bridges)
-    for w in (WIDTH, WIDTH * 3.0, octagon_width_min(NZ, CLR2)):
-        m = octagon_mortise(w, 6, nozzle=NZ, clearance=CLR2)
+    for w in (WIDTH, WIDTH * 3.0, _octagon_width_min(NZ, CLR2)):
+        m = _octagon_mortise(w, 6, nozzle=NZ, clearance=CLR2)
         top = max(m.val().Faces(), key=lambda f: f.Center().z)
         rw = top.BoundingBox().ylen
         ok = abs(rw - NZ) < 1e-3
@@ -901,7 +1780,7 @@ if __name__ == "__main__":
     # vertical) >= nozzle — the tenon is the smaller part. (Roof is exempt: it's the
     # capped bridge, a supported last layer.) seg(1)=lower/orange, seg(2)=vertical,
     # seg(3)=upper/green; stem = 2·pts[1].y.
-    wmin = octagon_width_min(NZ, CLR2)
+    wmin = _octagon_width_min(NZ, CLR2)
     tpts, _ = _octagon_profile(wmin, NZ, 0.0, CLR2)           # nominal = tenon
     seg = lambda i: math.hypot(tpts[i + 1][0] - tpts[i][0], tpts[i + 1][1] - tpts[i][1])
     stem_w, orange, vert, green = 2 * tpts[1][0], seg(1), seg(2), seg(3)
@@ -911,6 +1790,22 @@ if __name__ == "__main__":
           f"vert={vert:.3f} green={green:.3f} (min >= {NZ}){'' if ok else '  <-- FAIL'}")
     if not ok:
         fails.append(f"octagon: tenon segment {worst:.3f} < nozzle {NZ}")
+    # the MORTISE NECK survives the mitred dilation at the tier: the reflex
+    # shoulder corner shortens the cavity's neck vertical by clr·(√2−1), and
+    # the tenon post pre-grows by exactly that (user print-caught: a mount
+    # channel neck measured 1.54 at clr 0.15) — measure the CUTTER's
+    # stem-wall face top directly
+    for cc in (CLR2, 0.15):
+        m = _octagon_mortise(WIDTH, 6, nozzle=NZ, clearance=cc, drop=3)
+        sy = _STEM_FRAC * WIDTH / 2.0 + cc
+        zt = max(f.BoundingBox().zmax for f in m.val().Faces()
+                 if abs(abs(f.normalAt().y) - 1.0) < 1e-6
+                 and abs(abs(f.Center().y) - sy) < 1e-6)
+        ok = zt >= 2.0 * NZ - 1e-6
+        print(f"  mortise neck @clr={cc:.2f}  {zt:.3f} (must be >= {2.0 * NZ})"
+              f"{'' if ok else '  <-- FAIL'}")
+        if not ok:
+            fails.append(f"octagon: mortise neck {zt:.3f} at clr {cc}")
     # the fat stem: stem = width/2 (computed optimum), and the lower (orange)
     # diagonal is SHORTER than the upper (green) so the stem stays thick
     tpts, _ = _octagon_profile(WIDTH, NZ, 0.0, CLR2)
@@ -921,9 +1816,48 @@ if __name__ == "__main__":
           f"orange={orange:.3f} < green={green:.3f}{'' if ok else '  <-- FAIL'}")
     if not ok:
         fails.append(f"octagon: stem {stem_w:.3f} or orange>=green")
+    # STEM OVERRIDE (host-matching, user-sanctioned deviation): wider stem,
+    # shoulder gives, waist vertical takes — same height, same swallow
+    SO = 0.6 * WIDTH
+    spts, sroof = _octagon_profile(WIDTH, NZ, 0.0, CLR2, stem_w=SO)
+    _, droof = _octagon_profile(WIDTH, NZ, 0.0, CLR2)
+    sseg = lambda i: math.hypot(spts[i + 1][0] - spts[i][0],
+                                spts[i + 1][1] - spts[i][1])
+    s_stem, s_orange, s_vert = 2 * spts[1][0], sseg(1), sseg(2)
+    ok = (abs(s_stem - SO) < 1e-9 and abs(sroof - droof) < 1e-9
+          and abs(s_vert - (2.0 * NZ + (SO - 0.5 * WIDTH) / 2.0)) < 1e-9
+          and s_orange >= NZ * math.sqrt(2.0) - 1e-9)
+    print(f"  stem override         stem={s_stem:.3f} vert={s_vert:.3f} "
+          f"orange={s_orange:.3f} height {sroof:.3f}=={droof:.3f}"
+          f"{'' if ok else '  <-- FAIL'}")
+    if not ok:
+        fails.append("octagon: stem override geometry")
+    sten = _octagon_tenon(WIDTH, 14, nozzle=NZ, clearance=CLR2, stem_w=SO)
+    shost2 = (cq.Workplane("XY").box(20, WIDTH + 8, Hh + 6,
+                                     centered=(False, True, True))
+              .translate((0, 0, Hh / 2.0))
+              .cut(_octagon_mortise(WIDTH, 22, nozzle=NZ, clearance=CLR2,
+                                    drop=3, stem_w=SO).translate((-1, 0, 0))))
+    for label, d, expect in [("override seated", (0, 0, 0), "=0"),
+                             ("override +z locked", (0, 0, g), ">0"),
+                             ("override +y locked", (0, g, 0), ">0")]:
+        v = vol(shost2.translate(d), sten)
+        ok = (v == 0.0) if expect == "=0" else (v > 0.0)
+        print(f"  {label:<20} {v:>9.3f} mm3 (must be {expect})"
+              f"{'' if ok else '  <-- FAIL'}")
+        if not ok:
+            fails.append(f"octagon: {label} = {v:.3f}")
+    for bad, why in ((0.4 * WIDTH, "narrower"), (2.0 * (WIDTH / 2.0 - NZ) + 0.2,
+                                                 "shoulder-starving")):
+        try:
+            _octagon_profile(WIDTH, NZ, 0.0, CLR2, stem_w=bad)
+            fails.append(f"octagon: {why} stem override did not raise")
+            print(f"  {why} override      did NOT raise  <-- FAIL")
+        except ValueError:
+            print(f"  {why} override      raises (ok)")
     # below the tenon-minimum width must raise
     try:
-        octagon_tenon(wmin - 0.2, 10, nozzle=NZ, clearance=CLR2)
+        _octagon_tenon(wmin - 0.2, 10, nozzle=NZ, clearance=CLR2)
         fails.append("octagon: sub-minimum width did not raise")
         print("  width floor           did NOT raise  <-- FAIL")
     except ValueError:
@@ -932,31 +1866,33 @@ if __name__ == "__main__":
     # ── octagon HEIGHT (the install-x `depth` room bound): extra grows verticals ──
     print("-- octagon height --")
     W3, H3 = 28.0, 32.0
-    h0 = octagon_height(W3, NZ, CLR2)
-    ok = abs(octagon_height(W3, NZ, CLR2, H3) - H3) < 1e-6
+    h0 = _octagon_height(W3, NZ, CLR2)
+    ok = abs(_octagon_height(W3, NZ, CLR2, H3) - H3) < 1e-6
     print(f"  height echo           min {h0:.2f} -> sized {H3} {'ok' if ok else 'FAIL'}")
     if not ok:
         fails.append("octagon-h: height not honoured")
     hpts, _ = _octagon_profile(W3, NZ, 0.0, CLR2, H3)
     seg = lambda i: math.hypot(hpts[i + 1][0] - hpts[i][0], hpts[i + 1][1] - hpts[i][1])
     post, vert = hpts[1][1], seg(2)              # stem post height, waist vertical
-    want = NZ + (H3 - h0) / 2.0
-    ok = abs(post - want) < 1e-6 and abs(vert - want) < 1e-6
-    print(f"  verticals             post={post:.3f} vert={vert:.3f} (want {want:.3f} each)"
+    grow3 = CLR2 * (2.0 ** 0.5 - 1.0)            # neck pre-growth (mortise relief)
+    want = 2.0 * NZ + (H3 - h0) / 2.0            # verticals base = quality tier
+    ok = abs(post - (want + grow3)) < 1e-6 and abs(vert - want) < 1e-6
+    print(f"  verticals             post={post:.3f} (+{grow3:.3f} neck grow) "
+          f"vert={vert:.3f} (want {want:.3f})"
           f"{'' if ok else '  <-- FAIL'}")
     if not ok:
         fails.append(f"octagon-h: verticals {post:.3f}/{vert:.3f} != {want:.3f}")
-    hm = octagon_mortise(W3, 6, nozzle=NZ, clearance=CLR2, height=H3)
+    hm = _octagon_mortise(W3, 6, nozzle=NZ, clearance=CLR2, height=H3)
     htop = max(hm.val().Faces(), key=lambda f: f.Center().z)
     hrw = htop.BoundingBox().ylen
     ok = abs(hrw - NZ) < 1e-3
     print(f"  mortise roof @ H={H3}  {hrw:.3f} mm (must be {NZ}){'' if ok else '  <-- FAIL'}")
     if not ok:
         fails.append(f"octagon-h: roof {hrw:.3f} != {NZ}")
-    hten = octagon_tenon(W3, 14, nozzle=NZ, clearance=CLR2, height=H3)
+    hten = _octagon_tenon(W3, 14, nozzle=NZ, clearance=CLR2, height=H3)
     hhost = (cq.Workplane("XY").box(20, W3 + 8, H3 + 8, centered=(False, True, True))
              .translate((0, 0, H3 / 2.0))
-             .cut(octagon_mortise(W3, 22, nozzle=NZ, clearance=CLR2, drop=3,
+             .cut(_octagon_mortise(W3, 22, nozzle=NZ, clearance=CLR2, drop=3,
                                   height=H3).translate((-1, 0, 0))))
     g = CLR2 + 0.2
     for label, d, expect in [("seated", (0, 0, 0), "=0"), ("+z", (0, 0, g), ">0"),
@@ -968,22 +1904,22 @@ if __name__ == "__main__":
               f"{'' if ok else '  <-- FAIL'}")
         if not ok:
             fails.append(f"octagon-h: {label} = {v:.3f}")
-    # slide_joint depth -> octagon height; arrow + depth raises
-    js = slide_joint(W3, 14, PrintSpec(facing="up"), PrintSpec(facing="up"),
+    # joint depth -> octagon height; arrow + depth raises
+    js = joint(W3, 14, PrintSpec(facing="up"), PrintSpec(facing="up"),
                      clearance=CLR2, depth=H3)
     ok = abs(js.height - H3) < 1e-6
-    print(f"  slide_joint depth     .height={js.height:.2f} (want {H3}) {'ok' if ok else 'FAIL'}")
+    print(f"  joint depth     .height={js.height:.2f} (want {H3}) {'ok' if ok else 'FAIL'}")
     if not ok:
-        fails.append("octagon-h: slide_joint depth not honoured")
+        fails.append("octagon-h: joint depth not honoured")
     try:
-        slide_joint(5.6, 12, PrintSpec(facing="side"), PrintSpec(facing="up"),
+        joint(5.6, 12, PrintSpec(facing="side"), PrintSpec(facing="up"),
                     depth=10.0)
         fails.append("octagon-h: arrow+depth did not raise")
         print("  arrow + depth         did NOT raise  <-- FAIL")
     except ValueError:
         print("  arrow + depth         raises (ok)")
     try:
-        octagon_tenon(W3, 10, nozzle=NZ, clearance=CLR2, height=h0 - 1.0)
+        _octagon_tenon(W3, 10, nozzle=NZ, clearance=CLR2, height=h0 - 1.0)
         fails.append("octagon-h: sub-minimum height did not raise")
         print("  height floor          did NOT raise  <-- FAIL")
     except ValueError:
@@ -992,14 +1928,14 @@ if __name__ == "__main__":
     # ── octagon ARC (rotational install): seats by rotation about Z ──
     print("-- octagon arc --")
     AW2, AR = 5.0, 40.0
-    Hh2 = octagon_height(AW2, NZ)
+    Hh2 = _octagon_height(AW2, NZ)
     seat_a = math.degrees(0.15 / AR)
-    aten2 = octagon_tenon_arc(AW2, AR, 8.0, nozzle=NZ, clearance=CLR2)   # 0..8° CCW
+    aten2 = _octagon_tenon_arc(AW2, AR, 8.0, nozzle=NZ, clearance=CLR2)   # 0..8° CCW
     # host: full ring; cavity swept from the CW stop (−seat) far past the
     # tenon's CCW end (open entry side) — CW rotation seats against the stop.
     ahost2 = (cq.Workplane("XY").workplane(offset=-3.0)
               .circle(AR + 10).circle(AR - 10).extrude(Hh2 + 6)
-              .cut(octagon_mortise_arc(AW2, AR, 30.0, nozzle=NZ,
+              .cut(_octagon_mortise_arc(AW2, AR, 30.0, nozzle=NZ,
                                        clearance=CLR2, drop=3)
                    .rotate((0, 0, 0), (0, 0, 1), -seat_a)))
     g = CLR2 + 0.2
@@ -1022,18 +1958,167 @@ if __name__ == "__main__":
         if not ok:
             fails.append(f"octagon arc: {label} = {v:.3f}")
 
-    # ── dovetail (install ∥ print-Z): both hosts -Z→+Z, slides along Z ──
-    print("-- dovetail --")
+    # ── octagon Z-RELIEF (split clearances — the user's stem/wall mechanism):
+    # tenon post + cavity waist vertical each grow by the depth gap, so the
+    # seated flare pair opens by bc; the mortise neck, the laterals and the
+    # one-nozzle roof keep their standard story ──
+    print("-- octagon z-relief --")
+    BCR = 0.30
+    rten0 = _octagon_tenon(WIDTH, 14, nozzle=NZ, clearance=CLR2)
+    rten = _octagon_tenon(WIDTH, 14, nozzle=NZ, clearance=CLR2,
+                          back_clearance=BCR)
+    grew = rten.val().BoundingBox().zmax - rten0.val().BoundingBox().zmax
+    ok = abs(grew - BCR) < 1e-6
+    print(f"  tenon post +bc        grew {grew:.3f} (want {BCR})"
+          f"{'' if ok else '  <-- FAIL'}")
+    if not ok:
+        fails.append(f"oct-relief: tenon grew {grew:.3f}")
+    ok = abs(_octagon_height(WIDTH, NZ, CLR2, back_clearance=BCR)
+             - (_octagon_height(WIDTH, NZ, CLR2) + BCR)) < 1e-6
+    print(f"  height carries relief {'ok' if ok else 'FAIL'}")
+    if not ok:
+        fails.append("oct-relief: height without +bc")
+    # cavity: waist vertical +bc (the measured mortise wall), roof still one
+    # nozzle, and the printed NECK wall unchanged at its tier
+    rmor = _octagon_mortise(WIDTH, 6, nozzle=NZ, clearance=CLR2,
+                            back_clearance=BCR)
+    rtop = max(rmor.val().Faces(), key=lambda f: f.Center().z)
+    rrw = rtop.BoundingBox().ylen
+    ok = abs(rrw - NZ) < 1e-3
+    print(f"  relief mortise roof   {rrw:.3f} (must be {NZ})"
+          f"{'' if ok else '  <-- FAIL'}")
+    if not ok:
+        fails.append(f"oct-relief: roof {rrw:.3f}")
+    rsy = _STEM_FRAC * WIDTH / 2.0 + CLR2
+    rzt = max(f.BoundingBox().zmax for f in rmor.val().Faces()
+              if abs(abs(f.normalAt().y) - 1.0) < 1e-6
+              and abs(abs(f.Center().y) - rsy) < 1e-6)
+    zt0 = max(f.BoundingBox().zmax
+              for f in _octagon_mortise(WIDTH, 6, nozzle=NZ,
+                                        clearance=CLR2).val().Faces()
+              if abs(abs(f.normalAt().y) - 1.0) < 1e-6
+              and abs(abs(f.Center().y) - rsy) < 1e-6)
+    ok = abs(rzt - zt0) < 1e-6
+    print(f"  neck wall unchanged   {rzt:.3f} (= plain {zt0:.3f})"
+          f"{'' if ok else '  <-- FAIL'}")
+    if not ok:
+        fails.append(f"oct-relief: neck {rzt:.3f} vs {zt0:.3f}")
+    # seated pair: SEPARATING the hosts (mortise host off along +z — the
+    # flare/neck sandwich, the faces that grab in fiber prints) rides the
+    # relief before the flares engage; pushing together still binds fast
+    # at the cavity roof (the mating faces locate that direction anyway)
+    Hr = _octagon_height(WIDTH, NZ, CLR2, back_clearance=BCR)
+    rhost = (cq.Workplane("XY").box(20, WIDTH + 8, Hr + 8,
+                                    centered=(False, True, True))
+             .translate((0, 0, Hr / 2.0))
+             .cut(_octagon_mortise(WIDTH, 22, nozzle=NZ, clearance=CLR2,
+                                   drop=3, back_clearance=BCR)
+                  .translate((-1, 0, 0))))
+    flare_gap = BCR + CLR2 * math.sqrt(2.0)
+    for label, d, expect in [
+            ("relief seated", (0, 0, 0), "=0"),
+            ("separation rides bc", (0, 0, BCR), "=0"),
+            ("flares engage past it", (0, 0, flare_gap + 0.1), ">0"),
+            ("push-together locked", (0, 0, -(CLR2 + 0.2)), ">0"),
+            ("+y locked", (0, CLR2 + 0.2, 0), ">0")]:
+        v = vol(rhost.translate(d), rten)
+        ok = (v == 0.0) if expect == "=0" else (v > 0.0)
+        print(f"  {label:<20} {v:>9.3f} mm3 (must be {expect})"
+              f"{'' if ok else '  <-- FAIL'}")
+        if not ok:
+            fails.append(f"oct-relief: {label} = {v:.3f}")
+    # joint() wires the policy through: GF specs → octagon carries the 0.30
+    gfup = PrintSpec(nozzle=NZ, material="PETG-GF", facing="up")
+    jgf = joint(WIDTH, 14, gfup, gfup)
+    ok = (jgf.family == "octagon"
+          and abs(jgf.height - _octagon_height(WIDTH, NZ, 0.15,
+                                               back_clearance=0.30)) < 1e-9)
+    print(f"  GF joint height       {jgf.height:.3f} (relief included) "
+          f"{'ok' if ok else 'FAIL'}")
+    if not ok:
+        fails.append(f"oct-relief: GF joint height {jgf.height}")
+
+    # ── ring↔arm CROSSING (the rotational SITE helper) ──
+    print("-- crossing --")
+    CR, CAW = 40.0, 10.0
+    cj = joint(5.0, None, PrintSpec(facing="up"), PrintSpec(facing="up"),
+               clearance=0.1)
+    cx = cj.crossing(CR, CAW, seat=0.15, over=1.0)
+    ok = abs(cx.ten - math.degrees((CAW / 2.0) / CR)) < 1e-9
+    print(f"  50% default           ten={cx.ten:.3f}deg "
+          f"(= half the {CAW} crossing) {'ok' if ok else 'FAIL'}")
+    if not ok:
+        fails.append(f"crossing: default ten {cx.ten}")
+    ok = abs(cx.free - (cx.ten + cx.over)) < 1e-12
+    print(f"  free = ten + over     {cx.free:.3f}deg {'ok' if ok else 'FAIL'}")
+    if not ok:
+        fails.append("crossing: free")
+    Hc = cj.height
+    carm = (cq.Workplane("XY")
+            .box(20, CAW, Hc + 6, centered=(False, True, True))
+            .translate((CR - 10.0, 0, Hc / 2.0))
+            .cut(cx.mortise(drop=3)))
+    cten = cx.tenon(root=1.0)
+    seat_deg = cx.seat
+    ccases = [
+        ("seated", cten, "=0"),
+        ("CW seat play free", _rot(cten, -seat_deg * 0.5), "=0"),
+        ("CW past seat locked", _rot(cten, -(seat_deg + 0.3)), ">0"),
+        ("CCW swing-out free", _rot(cten, cx.free + 0.5), "=0"),
+        ("+z lift locked", cten.translate((0, 0, 0.1 + 0.2)), ">0"),
+    ]
+    for label, solid, expect in ccases:
+        v = vol(carm, solid)
+        ok = (v == 0.0) if expect == "=0" else (v > 0.0)
+        print(f"  {label:<20} {v:>9.3f} mm3 (must be {expect})"
+              f"{'' if ok else '  <-- FAIL'}")
+        if not ok:
+            fails.append(f"crossing: {label} = {v:.3f}")
+    # a tenon eating the stop-side wall must raise
+    try:
+        cj.crossing(CR, CAW, tenon_l=CAW - 0.2, seat=0.15)
+        fails.append("crossing: no-stop-wall did not raise")
+        print("  stop-wall floor       did NOT raise  <-- FAIL")
+    except ValueError:
+        print("  stop-wall floor       raises (ok)")
+    # hand="ccw": the exact mirror — entry at the CW face, stop CCW,
+    # seat play and swing-out directions flip with it
+    cxm = cj.crossing(CR, CAW, seat=0.15, over=1.0, hand="ccw")
+    carm_m = (cq.Workplane("XY")
+              .box(20, CAW, Hc + 6, centered=(False, True, True))
+              .translate((CR - 10.0, 0, Hc / 2.0))
+              .cut(cxm.mortise(drop=3)))
+    cten_m = cxm.tenon(root=1.0)
+    for label, solid, expect in [
+            ("ccw seated", cten_m, "=0"),
+            ("ccw seat play free", _rot(cten_m, seat_deg * 0.5), "=0"),
+            ("ccw past seat locked", _rot(cten_m, seat_deg + 0.3), ">0"),
+            ("ccw swing-out free", _rot(cten_m, -(cxm.free + 0.5)), "=0")]:
+        v = vol(carm_m, solid)
+        ok = (v == 0.0) if expect == "=0" else (v > 0.0)
+        print(f"  {label:<20} {v:>9.3f} mm3 (must be {expect})"
+              f"{'' if ok else '  <-- FAIL'}")
+        if not ok:
+            fails.append(f"crossing: {label} = {v:.3f}")
+    try:
+        cj.crossing(CR, CAW, hand="widdershins")
+        fails.append("crossing: bad hand did not raise")
+        print("  bad hand              did NOT raise  <-- FAIL")
+    except ValueError:
+        print("  bad hand              raises (ok)")
+
+    # ── tee (install ∥ print-Z): both hosts -Z→+Z, slides along Z ──
+    print("-- tee --")
     DW, DD, NZ3, CLR3 = 6.0, 4.0, 0.8, 0.1        # AVAILABLE room: width 6, depth 4
-    Dh = dovetail_height(DW, DD, NZ3, CLR3)
-    dten = dovetail_tenon(DW, DD, 14, nozzle=NZ3, clearance=CLR3)    # z 0..14
+    Dh = _tee_height(DW, DD, NZ3, CLR3)
+    dten = _tee_tenon(DW, DD, 14, nozzle=NZ3, clearance=CLR3)    # z 0..14
     dhost = (cq.Workplane("XY").box(Dh + 6, DW + 8, 20, centered=(False, True, False))
              .translate((0, 0, -3))                                  # z -3..17, face at x=0
-             .cut(dovetail_mortise(DW, DD, 22, nozzle=NZ3, clearance=CLR3, drop=3)
+             .cut(_tee_mortise(DW, DD, 22, nozzle=NZ3, clearance=CLR3, drop=3)
                   .translate((0, 0, -4))))                           # through-slot in z
     n_solids = len(dten.val().Solids())
     if n_solids != 1:
-        fails.append(f"dovetail: tenon is {n_solids} solids")
+        fails.append(f"tee: tenon is {n_solids} solids")
     g = CLR3 + 0.2
     dchecks = [
         ("seated",              (0, 0, 0),  "=0"),
@@ -1049,58 +2134,186 @@ if __name__ == "__main__":
         ok = (v == 0.0) if expect == "=0" else (v > 0.0)
         print(f"  {label:<20} {v:>9.3f} mm3 (must be {expect}){'' if ok else '  <-- FAIL'}")
         if not ok:
-            fails.append(f"dovetail: {label} = {v:.3f}")
+            fails.append(f"tee: {label} = {v:.3f}")
     # profile is Y-symmetric (a lopsided +Y flank once shipped — the ±Y lock
     # probes can't see it, so gate the mirror directly)
-    dpts = _dovetail_profile(DW, DD, NZ3, 1.0)
+    dpts = _tee_profile(DW, DD, NZ3, 1.0, CLR3)
     fwd = sorted((round(x, 6), round(y, 6)) for x, y in dpts)
     mir = sorted((round(x, 6), round(-y, 6)) for x, y in dpts)
     ok = fwd == mir
     print(f"  profile Y-symmetric   {'ok' if ok else 'ASYMMETRIC  <-- FAIL'}")
     if not ok:
-        fails.append("dovetail: profile not Y-symmetric")
-    # OPTIMIZER gates — parity model on the strength links, bounds as ROOM:
-    # width-bound room (6, 4): neck=min(0.6·6, 1.2·4)=3.6, o=max(0.8, 1.2)=1.2,
-    # head=6.0 (=width), depth_used=3.0 < the 4.0 available (surplus unused)
-    neck, head, dused = dovetail_dims(DW, DD, NZ3)
-    ok = (abs(neck - 3.6) < 1e-9 and abs(head - 6.0) < 1e-9
-          and abs(dused - 3.0) < 1e-9 and dused < DD)
+        fails.append("tee: profile not Y-symmetric")
+    # SQUARE corners: every edge axis-parallel (the reason the T replaced the
+    # angled dovetail — 90° corners round compatibly on both halves)
+    ok = all(abs(a[0] - b[0]) < 1e-9 or abs(a[1] - b[1]) < 1e-9
+             for a, b in zip(dpts, dpts[1:] + dpts[:1]))
+    print(f"  square corners        {'ok' if ok else 'ANGLED EDGE  <-- FAIL'}")
+    if not ok:
+        fails.append("tee: non-axis-parallel edge")
+    # every wall segment on BOTH HALVES >= one nozzle across a spread of
+    # rooms — the MORTISE lip = tenon bar (its dilation eats the lip's
+    # +clearance, the reason the tenon lip is pre-grown)
+    BEAD = NZ3
+    for w, d in ((DW, DD), (10.0, 2.0), (_tee_width_min(NZ3), 3.0),
+                 (30.0, 30.0)):
+        n2, h2, du2 = _tee_dims(w, d, NZ3, CLR3)
+        bar2 = (du2 - CLR3) / 2.0                # = the printed MORTISE lip
+        o2 = (h2 - n2) / 2.0
+        worst = min(bar2, o2, n2)
+        ok = worst >= BEAD - 1e-9 and du2 <= d + 1e-9 and h2 <= w + 1e-9
+        print(f"  bead floors @({w:5.2f},{d:5.2f}) bar/m-lip={bar2:.2f} "
+              f"o={o2:.2f} neck={n2:.2f}{'' if ok else '  <-- FAIL'}")
+        if not ok:
+            fails.append(f"tee: bead floors at ({w},{d})")
+    # QUALITY BOUNDING BOX: at _tee_box_min(quality=True), EVERY segment
+    # on both halves lands exactly at the 2-nozzle tier
+    qw, qd = _tee_box_min(NZ3, CLR3, quality=True)
+    n2, h2, du2 = _tee_dims(qw, qd, NZ3, CLR3)
+    bar2, o2 = (du2 - CLR3) / 2.0, (h2 - n2) / 2.0
+    ok = (abs(n2 - 1.6) < 1e-9 and abs(o2 - 1.6) < 1e-9
+          and abs(bar2 - 1.6) < 1e-9 and abs(h2 - qw) < 1e-9)
+    print(f"  quality box ({qw:.2f},{qd:.2f}) neck={n2:.2f} o={o2:.2f} "
+          f"bar={bar2:.2f}{'' if ok else '  <-- FAIL'}")
+    if not ok:
+        fails.append(f"tee: quality box → {n2},{o2},{bar2}")
+    # OPTIMIZER gates — max-min, TWO stacked shear elements sharing
+    # (depth − clearance), walls at the quality tier where room allows:
+    # (6, 4): shear_room 1.95 → neck 2.34, o 1.6, head 5.54,
+    # bar 1.95 → depth_used 4.0 (full depth)
+    neck, head, dused = _tee_dims(DW, DD, NZ3, CLR3)
+    ok = (abs(neck - 2.34) < 1e-9 and abs(head - 5.54) < 1e-9
+          and abs(dused - 4.0) < 1e-9)
     print(f"  optimizer @room(6,4)  neck={neck:.2f} head={head:.2f} "
           f"depth_used={dused:.2f}{'' if ok else '  <-- FAIL'}")
     if not ok:
-        fails.append(f"dovetail: optimizer (6,4) → {neck},{head},{dused}")
-    # depth-bound room (10, 2): neck=2.4, head=4.0 < the 10 available — the
-    # joint declines width it can't convert into strength
-    neck, head, dused = dovetail_dims(10.0, 2.0, NZ3)
-    ok = (abs(neck - 2.4) < 1e-9 and abs(head - 4.0) < 1e-9
+        fails.append(f"tee: optimizer (6,4) → {neck},{head},{dused}")
+    # depth-bound room (10, 2): parity neck rides its 2-nozzle floor →
+    # neck=1.6, o=quality 1.6, head=4.8, bar=0.95 (degraded, ≥ the floor)
+    neck, head, dused = _tee_dims(10.0, 2.0, NZ3, CLR3)
+    ok = (abs(neck - 1.6) < 1e-9 and abs(head - 4.8) < 1e-9
           and abs(dused - 2.0) < 1e-9 and head < 10.0)
     print(f"  optimizer @room(10,2) neck={neck:.2f} head={head:.2f} "
           f"depth_used={dused:.2f}{'' if ok else '  <-- FAIL'}")
     if not ok:
-        fails.append(f"dovetail: optimizer (10,2) → {neck},{head},{dused}")
+        fails.append(f"tee: optimizer (10,2) → {neck},{head},{dused}")
+    # depth-rich room: parity caps depth_used at the (shoulder-trimmed)
+    # neck's shear balance — surplus depth stays host material
+    neck, head, dused = _tee_dims(6.0, 30.0, NZ3, CLR3)
+    ok = (abs(dused - (2.0 * neck / 1.2 + CLR3)) < 1e-9 and dused < 30.0
+          and abs((head - neck) / 2.0 - 1.6) < 1e-9)
+    print(f"  optimizer @room(6,30) neck={neck:.2f} depth_used={dused:.2f} "
+          f"(parity-capped, quality shoulders){'' if ok else '  <-- FAIL'}")
+    if not ok:
+        fails.append(f"tee: depth-rich cap → {neck},{dused}")
     # width floor raises
     try:
-        dovetail_tenon(dovetail_width_min(NZ3) - 0.2, 4.0, 10, nozzle=NZ3)
-        fails.append("dovetail: sub-minimum width did not raise")
+        _tee_tenon(_tee_width_min(NZ3) - 0.2, 4.0, 10, nozzle=NZ3)
+        fails.append("tee: sub-minimum width did not raise")
         print("  width floor           did NOT raise  <-- FAIL")
     except ValueError:
-        print(f"  width floor           raises below {dovetail_width_min(NZ3):.2f} mm (ok)")
-    # too-shallow depth raises (balanced neck would drop under 2 beads)
+        print(f"  width floor           raises below {_tee_width_min(NZ3):.2f} mm (ok)")
+    # too-shallow depth raises (no room for the mortise lip + head bar)
+    for bad_d in (1.0, 1.6):
+        try:
+            _tee_tenon(6.0, bad_d, 10, nozzle=NZ3)
+            fails.append(f"tee: depth {bad_d} did not raise")
+            print(f"  depth floor {bad_d}       did NOT raise  <-- FAIL")
+        except ValueError:
+            print(f"  depth floor {bad_d}       raises (ok)")
+
+    # ── clearance policy: material table, fiber depth rule, fit tiers ──
+    print("-- clearance policy --")
+    up_gf = PrintSpec(nozzle=0.8, material="PETG-GF", facing="up")
+    up_pl = PrintSpec(nozzle=0.8, facing="up")
+    pchecks = [
+        ("GF+GF normal → (0.15, 0.30)", joint_clearances(up_gf, up_gf), (0.15, 0.30)),
+        ("plain normal → (0.15, 0.15)", joint_clearances(up_pl, up_pl), (0.15, 0.15)),
+        ("GF one side → (0.15, 0.30)", joint_clearances(up_pl, up_gf), (0.15, 0.30)),
+        ("GF loose → (0.30, 0.60)", joint_clearances(up_gf, up_gf, "loose"), (0.30, 0.60)),
+        ("override 0.1 + GF → (0.1, 0.2)",
+         joint_clearances(up_gf, up_gf, override=0.1), (0.10, 0.20)),
+    ]
+    for label, got, want in pchecks:
+        ok = all(abs(g - w) < 1e-9 for g, w in zip(got, want))
+        print(f"  {label:<34} got ({got[0]:.2f}, {got[1]:.2f})"
+              f"{'' if ok else '  <-- FAIL'}")
+        if not ok:
+            fails.append(f"policy: {label} got {got}")
     try:
-        dovetail_tenon(6.0, 1.0, 10, nozzle=NZ3)
-        fails.append("dovetail: too-shallow depth did not raise")
-        print("  depth floor           did NOT raise  <-- FAIL")
+        joint_clearances(up_gf, up_gf, fit="wobbly")
+        fails.append("policy: unknown fit did not raise")
+        print("  unknown fit           did NOT raise  <-- FAIL")
     except ValueError:
-        print("  depth floor           raises (ok)")
+        print("  unknown fit           raises (ok)")
+
+    # ── fiber depth-face relief: ONLY the mortise back wall moves ──
+    # GF joint through joint: laterals stay at the base clearance
+    # (±y probes unchanged), but the tenon can float an extra base-worth
+    # of depth toward the cavity's back before touching.
+    BC = 0.30                                     # = 2 × the GF base 0.15
+    gj = joint(DW, 14, up_gf, up_gf, install="-z", depth=DD)
+    if abs(gj.clearance - 0.15) > 1e-9 or abs(gj.back_clearance - BC) > 1e-9:
+        fails.append(f"policy: joint GF clr ({gj.clearance}, {gj.back_clearance})")
+    gten = gj.tenon(root=1.0)
+    gj_cut = joint(DW, 22, up_gf, up_gf, install="-z", depth=DD)
+    ghost = (cq.Workplane("XY").box(Dh + 6, DW + 8, 20, centered=(False, True, False))
+             .translate((0, 0, -3))
+             .cut(gj_cut.mortise(drop=3).translate((0, 0, -4))))
+    gchecks = [
+        ("seated",              (0, 0, 0),             "=0"),
+        ("+y locked as before", (0, 0.15 + 0.2, 0),    ">0"),
+        ("-y locked as before", (0, -(0.15 + 0.2), 0), ">0"),
+        # the LIP pair also runs at the depth gap: pulling out rides the
+        # full 0.3 before the lips engage (was `clearance` when only the
+        # back wall grew — user print finding, both depth faces bind)
+        ("pull rides depth gap", (0.25, 0, 0),         "=0"),
+        ("lips engage past it",  (0.35, 0, 0),         ">0"),
+    ]
+    for label, d, expect in gchecks:
+        v = vol(ghost.translate(d), gten)
+        ok = (v == 0.0) if expect == "=0" else (v > 0.0)
+        print(f"  {label:<26} {v:>9.3f} mm3 (must be {expect})"
+              f"{'' if ok else '  <-- FAIL'}")
+        if not ok:
+            fails.append(f"policy: GF T {label} = {v:.3f}")
+    # the cavity's BACK WALL sits back_clearance past the tenon head (the
+    # lateral shift probes can't isolate it — the lips bind at the base
+    # clearance by design, so gate the cutter's extent directly), and the
+    # swallow reports the deeper cavity
+    du_gf = _tee_dims(DW, DD, NZ3, 0.15, BC)[2]
+    gbb = gj.mortise(drop=3).val().BoundingBox()
+    ok = abs(gbb.xmax - (du_gf + BC)) < 1e-6
+    print(f"  cavity back at du+bc      {gbb.xmax:.3f} vs {du_gf + BC:.3f}"
+          f"{'' if ok else '  <-- FAIL'}")
+    if not ok:
+        fails.append(f"policy: GF cavity back {gbb.xmax}")
+    # tier survives the bigger gaps: tenon bar = mortise lip = (du − bc)/2
+    bar_gf = (du_gf - BC) / 2.0
+    ok = bar_gf >= _bead(NZ3) - 1e-9
+    print(f"  GF bar / mortise lip      {bar_gf:.3f} (>= bead)"
+          f"{'' if ok else '  <-- FAIL'}")
+    if not ok:
+        fails.append(f"policy: GF bar {bar_gf}")
+    pbb = (joint(DW, 14, up_pl, up_pl, install="-z", depth=DD)
+           .mortise(drop=3).val().BoundingBox())
+    du_pl = _tee_dims(DW, DD, NZ3, 0.15)[2]
+    ok = abs(pbb.xmax - (du_pl + 0.15)) < 1e-6
+    print(f"  plain back at du+c        {pbb.xmax:.3f} vs {du_pl + 0.15:.3f}"
+          f"{'' if ok else '  <-- FAIL'}")
+    if not ok:
+        fails.append(f"policy: plain cavity back {pbb.xmax}")
+    if abs(gj.height - (du_gf + BC)) > 1e-9:
+        fails.append(f"policy: GF height {gj.height}")
 
     # ── hook (single-flank dovetail): EDGE-BOUNDED faces too short for the dovetail ──
     print("-- hook --")
     HW, NZ4, CLR4 = 4.2, 0.8, 0.1                 # a face too short for the dovetail
-    hten2 = hook_tenon(HW, 12, nozzle=NZ4, clearance=CLR4)           # z 0..12
+    hten2 = _hook_tenon(HW, 12, nozzle=NZ4, clearance=CLR4)           # z 0..12
     # host block spans EXACTLY the width — both ±Y faces are FREE EDGES
     hhost2 = (cq.Workplane("XY").box(6, HW, 20, centered=(False, True, False))
               .translate((0, 0, -3))
-              .cut(hook_mortise(HW, 22, nozzle=NZ4, clearance=CLR4, drop=3)
+              .cut(_hook_mortise(HW, 22, nozzle=NZ4, clearance=CLR4, drop=3)
                    .translate((0, 0, -4))))                          # through-slot in z
     n_solids = len(hten2.val().Solids())
     if n_solids != 1:
@@ -1121,122 +2334,382 @@ if __name__ == "__main__":
         print(f"  {label:<34} {v:>9.3f} mm3 (must be {expect}){'' if ok else '  <-- FAIL'}")
         if not ok:
             fails.append(f"hook: {label} = {v:.3f}")
-    # bead budget: the dilated cavity leaves EXACTLY one nozzle of wall at
-    # each free edge, and the lip (notch minus dilation) is one nozzle
+    # tier budget: the dilated cavity leaves EXACTLY one tier-segment of
+    # wall at each free edge, and the lip (notch minus dilation) matches
+    seg4 = _hook_seg(HW, NZ4, CLR4)
     hpts2 = _hook_profile(HW, NZ4, CLR4, 1.0)
     y_lo = min(y for _x, y in hpts2)              # stem bottom (tenon)
     y_hi = max(y for _x, y in hpts2)              # hook top (tenon)
     bot_wall = (y_lo - CLR4) - (-HW / 2.0)
     top_wall = HW / 2.0 - (y_hi + CLR4)
-    stem_h2, hd1, hd2 = hook_dims(HW, NZ4, CLR4)
+    stem_h2, hd1, hd2 = _hook_dims(HW, NZ4, CLR4)
     lip = hd1 - CLR4
-    ok = (abs(bot_wall - NZ4) < 1e-9 and abs(top_wall - NZ4) < 1e-9
-          and abs(lip - NZ4) < 1e-9 and abs(hd2 - hd1 - NZ4) < 1e-9
-          and stem_h2 >= NZ4 - 1e-9)
-    print(f"  bead budget           walls={bot_wall:.2f}/{top_wall:.2f} lip={lip:.2f} "
-          f"hook={hd2 - hd1:.2f} stem={stem_h2:.2f} (walls/lip/hook = nozzle)"
+    ok = (abs(bot_wall - seg4) < 1e-9 and abs(top_wall - seg4) < 1e-9
+          and abs(lip - seg4) < 1e-9 and abs(hd2 - hd1 - seg4) < 1e-9
+          and stem_h2 >= seg4 - 1e-9)
+    print(f"  tier budget           walls={bot_wall:.2f}/{top_wall:.2f} lip={lip:.2f} "
+          f"hook={hd2 - hd1:.2f} stem={stem_h2:.2f} (all = tier {seg4:.2f})"
           f"{'' if ok else '  <-- FAIL'}")
     if not ok:
-        fails.append(f"hook: bead budget walls {bot_wall:.2f}/{top_wall:.2f} "
+        fails.append(f"hook: tier budget walls {bot_wall:.2f}/{top_wall:.2f} "
                      f"lip {lip:.2f} stem {stem_h2:.2f}")
-    # surplus width goes into the STEM alone
-    stem_w6, _d1w, _d2w = hook_dims(6.0, NZ4, CLR4)
-    ok = abs((stem_w6 - stem_h2) - (6.0 - HW)) < 1e-9
-    print(f"  stem takes surplus    {stem_h2:.2f} -> {stem_w6:.2f} for width {HW} -> 6.0"
-          f"{'' if ok else '  <-- FAIL'}")
+    # QUALITY WIDTH: every segment lands exactly at 2·nozzle
+    wq = _hook_width_min(NZ4, CLR4, quality=True)
+    stem_q, d1_q, d2_q = _hook_dims(wq, NZ4, CLR4)
+    ok = (abs(stem_q - 2 * NZ4) < 1e-9 and abs(d1_q - CLR4 - 2 * NZ4) < 1e-9
+          and abs(d2_q - d1_q - 2 * NZ4) < 1e-9)
+    print(f"  quality width {wq:.2f}    stem={stem_q:.2f} lip={d1_q - CLR4:.2f} "
+          f"hook={d2_q - d1_q:.2f} (all = 2·nozzle){'' if ok else '  <-- FAIL'}")
     if not ok:
-        fails.append(f"hook: stem surplus {stem_w6:.2f} vs {stem_h2:.2f}")
+        fails.append(f"hook: quality width → {stem_q},{d1_q},{d2_q}")
+    # beyond the quality width, surplus goes into the STEM alone
+    stem_w8, _d1w, _d2w = _hook_dims(wq + 1.4, NZ4, CLR4)
+    ok = abs((stem_w8 - stem_q) - 1.4) < 1e-9
+    print(f"  stem takes surplus    {stem_q:.2f} -> {stem_w8:.2f} for width "
+          f"{wq:.2f} -> {wq + 1.4:.2f}{'' if ok else '  <-- FAIL'}")
+    if not ok:
+        fails.append(f"hook: stem surplus {stem_w8:.2f} vs {stem_q:.2f}")
     # width floor raises
     try:
-        hook_tenon(hook_width_min(NZ4, CLR4) - 0.2, 10, nozzle=NZ4, clearance=CLR4)
+        _hook_tenon(_hook_width_min(NZ4, CLR4) - 0.2, 10, nozzle=NZ4, clearance=CLR4)
         fails.append("hook: sub-minimum width did not raise")
         print("  width floor           did NOT raise  <-- FAIL")
     except ValueError:
-        print(f"  width floor           raises below {hook_width_min(NZ4, CLR4):.2f} mm (ok)")
+        print(f"  width floor           raises below {_hook_width_min(NZ4, CLR4):.2f} mm (ok)")
 
-    # ── unified slide_joint dispatch ──
-    print("-- slide_joint --")
+    # ── mushroom (flat-top): mortise host builds DOWN toward the opening ──
+    print("-- mushroom --")
+    MW, NZ5, CLR5 = 6.4, 0.8, 0.1
+    Mh = _mushroom_height(MW, NZ5, CLR5)
+    mten = _mushroom_tenon(MW, 14, nozzle=NZ5, clearance=CLR5)
+    mhost = (cq.Workplane("XY").box(20, MW + 8, Mh + 6, centered=(False, True, True))
+             .translate((0, 0, Mh / 2.0))
+             .cut(_mushroom_mortise(MW, 22, nozzle=NZ5, clearance=CLR5, drop=3)
+                  .translate((-1, 0, 0))))
+    if len(mten.val().Solids()) != 1:
+        fails.append("mushroom: tenon not 1 solid")
+    g = CLR5 + 0.2
+    for label, d, expect in [
+            ("seated", (0, 0, 0), "=0"), ("+x free", (2, 0, 0), "=0"),
+            ("-x free", (-2, 0, 0), "=0"), ("+z lift locked", (0, 0, g), ">0"),
+            ("-z push locked", (0, 0, -g), ">0"), ("+y locked", (0, g, 0), ">0"),
+            ("-y locked", (0, -g, 0), ">0")]:
+        v = vol(mhost.translate(d), mten)
+        ok = (v == 0.0) if expect == "=0" else (v > 0.0)
+        print(f"  {label:<20} {v:>9.3f} mm3 (must be {expect}){'' if ok else '  <-- FAIL'}")
+        if not ok:
+            fails.append(f"mushroom: {label} = {v:.3f}")
+    # pocket variant: z free, y still located
+    mpock = (cq.Workplane("XY").box(20, MW + 8, Mh + 6, centered=(False, True, True))
+             .translate((0, 0, Mh / 2.0))
+             .cut(_mushroom_mortise(MW, 22, nozzle=NZ5, clearance=CLR5, drop=3,
+                                    pocket=True).translate((-1, 0, 0))))
+    for label, d, expect in [("pocket seated", (0, 0, 0), "=0"),
+                             ("pocket +z FREE", (0, 0, g), "=0"),
+                             ("pocket +y locked", (0, g, 0), ">0")]:
+        v = vol(mpock.translate(d), mten)
+        ok = (v == 0.0) if expect == "=0" else (v > 0.0)
+        print(f"  {label:<20} {v:>9.3f} mm3 (must be {expect}){'' if ok else '  <-- FAIL'}")
+        if not ok:
+            fails.append(f"mushroom: {label} = {v:.3f}")
+    # the cavity NECK survives the dilation at the tier (octagon lesson)
+    mm = _mushroom_mortise(MW, 6, nozzle=NZ5, clearance=CLR5, drop=3)
+    msy = _STEM_FRAC * MW / 2.0 + CLR5
+    mzt = max(f.BoundingBox().zmax for f in mm.val().Faces()
+              if abs(abs(f.normalAt().y) - 1.0) < 1e-6
+              and abs(abs(f.Center().y) - msy) < 1e-6)
+    ok = mzt >= 2.0 * NZ5 - 1e-6
+    print(f"  mortise neck          {mzt:.3f} (must be >= {2.0 * NZ5})"
+          f"{'' if ok else '  <-- FAIL'}")
+    if not ok:
+        fails.append(f"mushroom: mortise neck {mzt:.3f}")
+    # SPLIT clearances (fiber depth relief): the relief rides the TENON's
+    # grown post — the octagon's shared mechanics — so the cavity's
+    # printed neck wall KEEPS the tier (print-caught at 1.36 on the
+    # cable-spool horn cap when the flares shifted down instead), and the
+    # seated z-sandwich opens by exactly bc: lift rides the relief free,
+    # then binds
+    BC5 = 0.3
+    ok = abs(_mushroom_height(MW, NZ5, CLR5, back_clearance=BC5)
+             - (Mh + BC5)) < 1e-9
+    print(f"  split post growth     +{BC5} on height {'ok' if ok else 'FAIL'}")
+    if not ok:
+        fails.append("mushroom: split height growth")
+    smm = _mushroom_mortise(MW, 6, nozzle=NZ5, clearance=CLR5, drop=3,
+                            back_clearance=BC5)
+    szt = max(f.BoundingBox().zmax for f in smm.val().Faces()
+              if abs(abs(f.normalAt().y) - 1.0) < 1e-6
+              and abs(abs(f.Center().y) - msy) < 1e-6)
+    ok = szt >= 2.0 * NZ5 - 1e-6
+    print(f"  split mortise neck    {szt:.3f} (must be >= {2.0 * NZ5})"
+          f"{'' if ok else '  <-- FAIL'}")
+    if not ok:
+        fails.append(f"mushroom: split mortise neck {szt:.3f}")
+    smten = _mushroom_tenon(MW, 14, nozzle=NZ5, clearance=CLR5,
+                            back_clearance=BC5)
+    shost = (cq.Workplane("XY")
+             .box(20, MW + 8, Mh + BC5 + 6, centered=(False, True, True))
+             .translate((0, 0, (Mh + BC5) / 2.0))
+             .cut(_mushroom_mortise(MW, 22, nozzle=NZ5, clearance=CLR5,
+                                    drop=3, back_clearance=BC5)
+                  .translate((-1, 0, 0))))
+    for label, dz, expect in [("split seated", 0.0, "=0"),
+                              ("split lift < bc free", 0.8 * BC5, "=0"),
+                              ("split lift > bc locked", BC5 + 0.2, ">0")]:
+        v = vol(shost.translate((0, 0, dz)), smten)
+        ok = (v == 0.0) if expect == "=0" else (v > 0.0)
+        print(f"  {label:<22} {v:>7.3f} mm3 (must be {expect})"
+              f"{'' if ok else '  <-- FAIL'}")
+        if not ok:
+            fails.append(f"mushroom: {label} = {v:.3f}")
+    # NO roof pre-shrink: the tenon top is the FULL width (the flat prints
+    # as a supported floor in the down-building mortise host)
+    mtop = max(mten.val().Faces(), key=lambda f: f.Center().z)
+    ok = abs(mtop.BoundingBox().ylen - MW) < 1e-6
+    print(f"  flat top = width      {mtop.BoundingBox().ylen:.3f} (= {MW})"
+          f"{'' if ok else '  <-- FAIL'}")
+    if not ok:
+        fails.append("mushroom: top not full width")
+    try:
+        _mushroom_tenon(_mushroom_width_min(NZ5, CLR5) - 0.2, 10, nozzle=NZ5,
+                        clearance=CLR5)
+        fails.append("mushroom: sub-minimum width did not raise")
+        print("  width floor           did NOT raise  <-- FAIL")
+    except ValueError:
+        print("  width floor           raises (ok)")
+    # THROUGH variant (up+up site, thin host): `height` runs the waist
+    # walls out past the far face — the cavity exits, no flat end is ever
+    # printed, and the flare retention is unchanged
+    MTH = 9.0
+    mthru = _mushroom_mortise(MW, 22, nozzle=NZ5, clearance=CLR5, drop=3,
+                              height=MTH)
+    mtz = mthru.val().BoundingBox().zmax
+    ok = abs(mtz - (MTH + CLR5)) < 1e-6            # cutter = profile dilated
+    print(f"  through cavity top    {mtz:.3f} (must be height+clr "
+          f"{MTH + CLR5}){'' if ok else '  <-- FAIL'}")
+    if not ok:
+        fails.append(f"mushroom: through height {mtz:.3f} != {MTH + CLR5}")
+    thost = (cq.Workplane("XY").box(20, MW + 8, 8, centered=(False, True, False))
+             .translate((0, 0, -3.0))                     # host z -3..5 < 9
+             .cut(mthru.translate((-1, 0, 0))))           # → cavity EXITS
+    v = vol(thost.translate((0, 0, g)), mten)
+    ok = v > 0.0
+    print(f"  through +z lift locked {v:>8.3f} mm3 (must be >0)"
+          f"{'' if ok else '  <-- FAIL'}")
+    if not ok:
+        fails.append("mushroom: through lift not locked")
+
+    # ── unified joint dispatch ──
+    print("-- joint --")
     up = PrintSpec(nozzle=0.8, material="PETG-GF", facing="up")
     side = PrintSpec(nozzle=0.8, material="PETG-GF", facing="side")
+    CGF = _MATERIAL_CLEARANCE["PETG-GF"]          # 0.15 — the table's GF base
     cases = [
-        ("up+up -> octagon", up, up, "x",
-         octagon_tenon(6.0, 12, 0.8, 0.1).val().Volume()),
-        ("side+up -> arrow", side, up, "x",
-         arrow_tenon(5.6, 12, 0.8, 0.1).val().Volume()),
-        ("up+up z -> dovetail", up, up, "z",
-         dovetail_tenon(6.0, 3.0, 12, 0.8, 0.1).val().Volume()),   # default depth = width/2
+        ("up+up -> octagon", up, up, "+x",
+         _octagon_tenon(6.0, 12, 0.8, CGF,                     # GF → the z-relief
+                        back_clearance=2 * CGF).val().Volume()),   # rides the post
+
+        ("side+up -> arrow", side, up, "+x",
+         _arrow_tenon(5.6, 12, 0.8, CGF).val().Volume()),
+        ("up+up z -> tee", up, up, "-z",
+         _tee_tenon(6.0, 3.0, 12, 0.8, CGF,                    # default depth = width/2;
+                        back_clearance=2 * CGF).val().Volume()),   # GF → depth faces 2×
     ]
     for label, tspec, mspec, inst, want_vol in cases:
         w = 6.0 if tspec.facing == "up" else 5.6
-        j = slide_joint(w, 12, tenon=tspec, mortise=mspec, install=inst)
+        j = joint(w, 12, tenon=tspec, mortise=mspec, install=inst)
         got = j.tenon().val().Volume()
-        ok = abs(got - want_vol) < 1e-3 and j.clearance == 0.1
+        ok = abs(got - want_vol) < 1e-3 and j.clearance == CGF
         print(f"  {label:<22} clr={j.clearance} vol={got:.1f}{'' if ok else '  <-- FAIL'}")
         if not ok:
-            fails.append(f"slide_joint: {label} vol {got:.1f}/{want_vol:.1f} clr {j.clearance}")
+            fails.append(f"joint: {label} vol {got:.1f}/{want_vol:.1f} clr {j.clearance}")
+    dn = PrintSpec(nozzle=0.8, material="PETG-GF", facing="down")
+    jm = joint(6.4, 12, tenon=up, mortise=dn)
+    ok = (jm.family == "mushroom"
+          and abs(jm.tenon().val().Volume()               # GF → the z-relief
+                  - _mushroom_tenon(6.4, 12, 0.8, CGF,    # rides the post
+                                    back_clearance=2 * CGF).val().Volume())
+          < 1e-3)
+    print(f"  up+down -> mushroom   clr={jm.clearance} {'ok' if ok else 'FAIL'}")
+    if not ok:
+        fails.append("joint: up+down mushroom")
+    ok = joint_box_min(up, dn)[0] == _mushroom_width_min(0.8, CGF)
+    print(f"  box_min up+down       {'ok' if ok else 'FAIL'}")
+    if not ok:
+        fails.append("joint_box_min: up+down")
+    # cavity_depth: the one number a mortise host must clear — measured
+    # against the actual cutter's top for BOTH bulb families (their
+    # internal top rules differ; callers must not have to know which)
+    for lbl, jj in (("mushroom split", joint(6.4, 12, tenon=up, mortise=dn)),
+                    ("octagon split", joint(6.0, 12, tenon=up, mortise=up))):
+        zmax = jj.mortise(drop=2.0).val().BoundingBox().zmax
+        ok = abs(zmax - jj.cavity_depth) < 1e-6
+        print(f"  cavity_depth {lbl:15s} {jj.cavity_depth:.3f} == cutter "
+              f"{zmax:.3f} {'ok' if ok else 'FAIL'}")
+        if not ok:
+            fails.append(f"cavity_depth: {lbl} {jj.cavity_depth} != {zmax}")
+    # cavity_span: what mortise() cuts, hand applied — width and mirror
+    jc5 = joint(5.0, None, tenon=up, mortise=up)
+    Xcw = jc5.crossing(40.0, 10.0, seat=0.15, over=1.0, hand="cw")
+    Xcc = jc5.crossing(40.0, 10.0, seat=0.15, over=1.0, hand="ccw")
+    ok = (abs((Xcw.cavity_span[1] - Xcw.cavity_span[0])
+              - (Xcw.ten + Xcw.seat + Xcw.over)) < 1e-9
+          and abs(Xcc.cavity_span[0] + Xcw.cavity_span[1]) < 1e-9
+          and abs(Xcc.cavity_span[1] + Xcw.cavity_span[0]) < 1e-9)
+    print(f"  cavity_span           cw {Xcw.cavity_span[0]:.2f}.."
+          f"{Xcw.cavity_span[1]:.2f} = ccw mirrored {'ok' if ok else 'FAIL'}")
+    if not ok:
+        fails.append("cavity_span: width/mirror")
+    # up+up + THROUGH → mushroom, cavity run = depth; tenon stays minimal
+    jt = joint(6.4, 12, tenon=up, mortise=up, install="-x", depth=9.0,
+               through=True)
+    ok = (jt.family == "mushroom"
+          and abs(jt.mortise(drop=2.0).val().BoundingBox().zmax
+                  - (9.0 + 2.0 * jt.back_clearance)) < 1e-6  # relief + top gap
+          and abs(jt.tenon().val().BoundingBox().zmax   # post rides the DEPTH
+                  - _mushroom_height(6.4, 0.8, CGF,     # gap (fiber relief)
+                                     back_clearance=jt.back_clearance))
+          < 1e-6)
+    print(f"  up+up through -> mushroom  {'ok' if ok else 'FAIL'}")
+    if not ok:
+        fails.append("joint: up+up through mushroom")
+    try:
+        joint(6.4, 12, tenon=up, mortise=up, install="-x", through=True)
+        fails.append("joint: through without depth did not raise")
+        print("  through needs depth   did NOT raise  <-- FAIL")
+    except ValueError:
+        print("  through needs depth   raises (ok)")
     # install='z' with a side-printed host must raise (plan profile would overhang)
     try:
-        slide_joint(6, 12, side, up, install="z")
-        fails.append("slide_joint: install='z' with side host did not raise")
+        joint(6, 12, side, up, install="-z")
+        fails.append("joint: install='z' with side host did not raise")
         print("  z-install side host   did NOT raise  <-- FAIL")
     except NotImplementedError:
         print("  z-install side host   raises (ok)")
-    # bounded install='z': the geometry ADAPTS to the edge-to-edge room —
-    # roomy face → dovetail inside reserved edge walls; short face → hook
-    jb = slide_joint(8.0, 12, up, up, install="z", bounded=True)
-    ok = (jb.family == "dovetail"
-          and abs(jb.width - (8.0 - 2 * (0.8 + 0.1))) < 1e-9)
-    print(f"  bounded 8.0 -> dovetail (usable {jb.width:.1f}) {'ok' if ok else 'FAIL'}")
+    # bounded install='z': the library sizes BOTH candidate profiles and
+    # keeps the higher-TIER one (tie → tee). 8.0 GF: the tee fits but its
+    # shallow default depth caps a wall at ~1.38 while the hook sits at the
+    # full 1.6 quality tier → HOOK. 12.0 GF: the tee reaches the 1.6 tier
+    # too → tie → TEE (it retains both pull directions).
+    jb = joint(8.0, 12, up, up, install="-z", bounded=True)
+    ok = jb.family == "hook" and abs(jb.height - _hook_depth(8.0, 0.8, CGF)) < 1e-9
+    print(f"  bounded 8.0 -> hook (tier beats shallow tee) {'ok' if ok else 'FAIL'}")
     if not ok:
-        fails.append(f"slide_joint: bounded 8.0 -> {jb.family}/{jb.width}")
-    jb = slide_joint(4.2, 12, up, up, install="z", bounded=True)
-    ok = jb.family == "hook" and abs(jb.height - hook_depth(0.8, 0.1)) < 1e-9
+        fails.append(f"joint: bounded 8.0 -> {jb.family}/{jb.width}")
+    jb = joint(12.0, 12, up, up, install="-z", bounded=True)
+    ok = (jb.family == "tee"
+          and abs(jb.width - (12.0 - 2 * (0.8 + CGF))) < 1e-9)
+    print(f"  bounded 12.0 -> tee (usable {jb.width:.1f}, tie at tier) {'ok' if ok else 'FAIL'}")
+    if not ok:
+        fails.append(f"joint: bounded 12.0 -> {jb.family}/{jb.width}")
+    # a DEEP depth bound lifts the tee to the tier at 8.0 too → tee wins the tie
+    jb = joint(8.0, 12, up, up, install="-z", bounded=True, depth=3.8)
+    ok = jb.family == "tee"
+    print(f"  bounded 8.0 deep -> tee (depth room lifts its tier) {'ok' if ok else 'FAIL'}")
+    if not ok:
+        fails.append(f"joint: bounded 8.0 deep -> {jb.family}")
+    jb = joint(4.2, 12, up, up, install="-z", bounded=True)
+    ok = jb.family == "hook" and abs(jb.height - _hook_depth(4.2, 0.8, CGF)) < 1e-9
     print(f"  bounded 4.2 -> hook (height {jb.height:.1f}) {'ok' if ok else 'FAIL'}")
     if not ok:
-        fails.append(f"slide_joint: bounded 4.2 -> {jb.family}")
+        fails.append(f"joint: bounded 4.2 -> {jb.family}")
     ok = abs(jb.tenon().val().Volume()
-             - hook_tenon(4.2, 12, 0.8, 0.1).val().Volume()) < 1e-3
-    print(f"  bounded hook tenon    matches hook_tenon {'ok' if ok else 'FAIL'}")
+             - _hook_tenon(4.2, 12, 0.8, CGF).val().Volume()) < 1e-3
+    print(f"  bounded hook tenon    matches _hook_tenon {'ok' if ok else 'FAIL'}")
     if not ok:
-        fails.append("slide_joint: bounded hook tenon volume mismatch")
+        fails.append("joint: bounded hook tenon volume mismatch")
     # bounded on an x-install must raise; bounded sub-minimum must raise
     try:
-        slide_joint(6, 12, up, up, bounded=True)
-        fails.append("slide_joint: bounded install='x' did not raise")
+        joint(6, 12, up, up, bounded=True)
+        fails.append("joint: bounded install='x' did not raise")
         print("  bounded x-install     did NOT raise  <-- FAIL")
     except ValueError:
         print("  bounded x-install     raises (ok)")
     try:
-        slide_joint(3.0, 12, up, up, install="z", bounded=True)
-        fails.append("slide_joint: bounded sub-minimum did not raise")
+        joint(3.0, 12, up, up, install="-z", bounded=True)
+        fails.append("joint: bounded sub-minimum did not raise")
         print("  bounded width floor   did NOT raise  <-- FAIL")
     except ValueError:
         print("  bounded width floor   raises (ok)")
-    # depth on an x-install family must raise (it's a dovetail-only bound)
+    # depth=3 on an up+up x-install: below that width's minimum height → raises
     try:
-        slide_joint(6, 12, up, up, depth=3)
-        fails.append("slide_joint: depth on install='x' did not raise")
+        joint(6, 12, up, up, depth=3)
+        fails.append("joint: depth on install='x' did not raise")
         print("  x-install depth       did NOT raise  <-- FAIL")
     except ValueError:
         print("  x-install depth       raises (ok)")
     # pocket on a non-octagon family must raise
     try:
-        slide_joint(6, 12, up, up, install="z").mortise(pocket=True)
-        fails.append("slide_joint: pocket on dovetail did not raise")
-        print("  dovetail pocket       did NOT raise  <-- FAIL")
+        joint(6, 12, up, up, install="-z").mortise(pocket=True)
+        fails.append("joint: pocket on tee did not raise")
+        print("  tee pocket            did NOT raise  <-- FAIL")
     except NotImplementedError:
-        print("  dovetail pocket       raises (ok)")
+        print("  tee pocket            raises (ok)")
+    # joint_box_min: the sizing counterpart of joint — same site inputs.
+    # Unbounded z at quality = the T's quality box; bounded z at quality =
+    # the hook's quality width + its swallow; x sites report width floors.
+    bm = joint_box_min(up, up, install="-z", quality=True)
+    ok = abs(bm[0] - 4.8) < 1e-9 and abs(bm[1] - 3.5) < 1e-9
+    print(f"  box_min z quality     ({bm[0]:.2f}, {bm[1]:.2f}) (want 4.80, 3.50)"
+          f"{'' if ok else '  <-- FAIL'}")
+    if not ok:
+        fails.append(f"joint_box_min: z quality {bm}")
+    bm = joint_box_min(up, up, install="-z", bounded=True, quality=True,
+                       clearance=0.1)
+    ok = (abs(bm[0] - 6.6) < 1e-9
+          and abs(bm[1] - _hook_depth(6.6, 0.8, 0.1)) < 1e-9)
+    print(f"  box_min bounded qual  ({bm[0]:.2f}, {bm[1]:.2f}) (want 6.60, hook swallow)"
+          f"{'' if ok else '  <-- FAIL'}")
+    if not ok:
+        fails.append(f"joint_box_min: bounded quality {bm}")
+    ok = (joint_box_min(up, up)[0] == _octagon_width_min(0.8, 0.15)
+          and joint_box_min(side, up)[0] == _arrow_width_min(0.8)
+          and joint_box_min(up, up)[1] is None)
+    print(f"  box_min x floors      {'ok' if ok else 'FAIL'}")
+    if not ok:
+        fails.append("joint_box_min: x floors")
+    # .dims mirrors the picked profile's numbers
+    jd = joint(DW, 12, up, up, install="-z", depth=DD)
+    nd, hd2, dud = _tee_dims(DW, DD, NZ3, 0.15, 0.30)
+    ok = (abs(jd.dims["neck"] - nd) < 1e-9 and abs(jd.dims["head"] - hd2) < 1e-9
+          and abs(jd.dims["depth_used"] - dud) < 1e-9
+          and abs(jd.dims["lip"] - (dud + 0.30) / 2.0) < 1e-9)
+    print(f"  .dims (tee)           neck={jd.dims['neck']:.2f} head={jd.dims['head']:.2f}"
+          f"{'' if ok else '  <-- FAIL'}")
+    if not ok:
+        fails.append(f"joint: dims {jd.dims}")
+    # arc solids come off the same up+up joint (length may be None; the GF
+    # specs still double the depth gap → the arc carries the z-relief too)
+    ja = joint(6.0, None, up, up, clearance=0.1)
+    va = ja.tenon_arc(40.0, 8.0).val().Volume()
+    ok = abs(va - _octagon_tenon_arc(6.0, 40.0, 8.0, 0.8, 0.1,
+                                     back_clearance=0.2).val().Volume()) < 1e-3
+    print(f"  arc off joint()       vol={va:.1f} {'ok' if ok else 'FAIL'}")
+    if not ok:
+        fails.append("joint: arc tenon volume mismatch")
+    try:
+        ja.tenon()
+        fails.append("joint: no-length prism did not raise")
+        print("  no-length prism       did NOT raise  <-- FAIL")
+    except ValueError:
+        print("  no-length prism       raises (ok)")
     # material default + override
     unknown = PrintSpec(material="MysteryPLA")
-    ok = (slide_joint(6, 12, unknown, unknown).clearance == _DEFAULT_CLEARANCE and
-          slide_joint(6, 12, up, up, clearance=0.22).clearance == 0.22)
+    ok = (joint(6, 12, unknown, unknown).clearance == _DEFAULT_CLEARANCE and
+          joint(6, 12, up, up, clearance=0.22).clearance == 0.22)
     print(f"  clearance default/override {'ok' if ok else 'FAIL'}")
     if not ok:
-        fails.append("slide_joint: clearance default/override")
+        fails.append("joint: clearance default/override")
     # unsupported facing combo raises
     try:
-        slide_joint(6, 12, up, side)          # tenon up, mortise side — not modelled
-        fails.append("slide_joint: unsupported combo did not raise")
+        joint(6, 12, up, up, install="z")     # bare axis — under-specified
+        fails.append("joint: bare install axis did not raise")
+        print("  bare install axis     did NOT raise  <-- FAIL")
+    except ValueError:
+        print("  bare install axis     raises (ok)")
+    try:
+        joint(6, 12, up, side)          # tenon up, mortise side — not modelled
+        fails.append("joint: unsupported combo did not raise")
         print("  unsupported combo     did NOT raise  <-- FAIL")
     except NotImplementedError:
         print("  unsupported combo     raises (ok)")
@@ -1247,6 +2720,7 @@ if __name__ == "__main__":
         print("OK — all variants: seat clear, only the band-guarded +x is free; "
               "hook locks the up-ramp diagonal; octagon locks +-y/+-z, fat stem, "
               "tenon floor >= nozzle, mortise roof one nozzle at any width; "
-              "edge-bounded z-sites adapt dovetail->single-flank hook with "
-              "one-nozzle walls and lip.")
+              "install-z T: square corners, every tenon wall >= one nozzle, "
+              "max-min allocation in the box; edge-bounded z-sites pick "
+              "the higher-tier profile (tee vs single-flank hook), tie->tee.")
     sys.exit(len(fails))

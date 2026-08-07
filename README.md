@@ -14,6 +14,17 @@ cadkit/
   joinery.py         printable mortise-and-tenon slide joints (read JOINERY_README.md)
   supports.py        teardrop + 45° wall-ramp support for short SIDEWAYS bosses
                      (horizontal cylinder off a wall, printed -Z→+Z)
+  holes.py           teardrop_hole() — cutter for SIDEWAYS round holes: 45°
+                     teardrop ceiling replaces the sagging round top; round
+                     lower half untouched (pins/rods bear as in a round bore)
+  printing.py        FDM minimum-material rule, counted in WHOLE BEADS (no
+                     buffer — Arachne fills exact nozzle multiples cleanly).
+                     min_wall(nozzle) = one bead = the hard floor;
+                     min_wall(nozzle, beads=2) = 1.6 at 0.8 = the QUALITY
+                     target. Aim at two; drop to one only in a tight room.
+  contact.py         minimal-contact rub features: contact_rib_size(nozzle)
+                     = exactly one nozzle (width AND proud; Arachne keeps
+                     exact-nozzle lines); contact_ring() = ring + teardrop tail
   step_export.py     export_step(obj, path) — names the STEP product after the file
   overlap_check.py   parallel interpenetration gate (wrap in tools/check_overlaps.py)
   cq_colors.py       hex / 0..255 / name -> cq.Color, for baking colours into a STEP
@@ -32,7 +43,7 @@ can't break a build.
 ```python
 from cadkit.fasteners import cut_anchor, M2, M4
 from cadkit.threads import cut_thread, threaded_rod
-from cadkit.joinery import arrow_tenon, arrow_mortise
+from cadkit.joinery import PrintSpec, joint
 from cadkit.step_export import export_step
 from cadkit.overlap_check import run
 from cadkit import cq_colors
