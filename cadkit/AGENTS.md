@@ -258,6 +258,14 @@ Nothing about a size is special-cased — `selftap_d = screw_d + 0.2` (FDM holes
 print undersize), `shaft_clr_d = screw_d + 0.4`, and **`min_bite = 5 × pitch`**
 (five engaged threads: M2 → 2.0, M4 → 3.5). Adding M3 means adding one spec.
 
+**The overlap gate has an INCREMENTAL CACHE.** `overlap_check.run(..., cache=<path>)`
+keys each pair's common volume by the two shapes' BRep fingerprints, so a rebuild
+re-booleans only the pairs whose parts actually changed. Measured on a 664-part
+instrument: a full build went 489 s -> 156 s, the gate itself 335 s -> 3.3 s. It is
+lossless -- a changed part misses and recomputes -- and it is NOT an exclusion list:
+the bbox reject already drops ~98.6% of pairs, and the survivors are exactly the ones
+nobody should assume are safe.
+
 **Every cutter takes `print_up`** (the part's build direction). A hole along it
 stays round; sideways or oblique it gets `holes.teardrop_hole`'s peak — pocket,
 self-tap and clearance alike. Pass it wherever the part's orientation is known,
