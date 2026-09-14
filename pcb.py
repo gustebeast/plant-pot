@@ -230,3 +230,53 @@ def jst_xh_side_header(n, *, smt=True, mated=False, plug_run=7.5):
     if mated:
         body = body.union(_block(L, plug_run, XH_SIDE_H, 0.0, -plug_run / 2, 0.0))
     return body
+
+
+# ── SIDE-ENTRY PH (S*B-PH-SM4-TB) ───────────────────────────────────────────
+# JST's 2.0 mm PH series, SMT side entry. Reached for where an XH will not fit:
+# XH's SMT side-entry line stops at 4 way, so a board that needs one connector
+# carrying more than four circuits AND surface mount AND side entry has no XH
+# option at all (the lever sensor board's trunk is the case that forced this).
+#
+# PROVENANCE, because these are not all the same grade of number:
+#   MEASURED off KiCad's own footprints (drawn from JST's drawing), and checked
+#   across two sizes so the formula is not fitted to one point --
+#     body length  = 2.0(n-1) + 6.0   (4 way 12.00, 8 way 20.00)
+#     body depth   = 7.70 along the mating axis
+#     the SMT pad row sits 0.40 back from the mouth face
+#   RESERVED, not measured: the HEIGHT above the board and the mated plug's
+#     reach. JST publishes both on the ePH drawing, whose PDF text is encoded
+#     with a shifted font map we cannot read, so rather than guess a number
+#     these take XH's figures -- which are LARGER, PH being the smaller series.
+#     Over-reserving is the safe error here in the same way it is for XH_SIDE
+#     above: the numbers exist to keep plastic away, and the only thing a
+#     too-big envelope costs is a slightly deeper relief pocket.
+#     ⚠ Read them off the drawing and tighten before anything depends on the
+#     clearance being TIGHT rather than on it being sufficient.
+PH_PITCH      = 2.0
+PH_SIDE_D     = 7.70      # body depth along the mating axis (measured)
+PH_SIDE_H     = XH_SIDE_H  # RESERVED at XH's 7.0 -- see above
+PH_ROW_OFF    = 0.40      # pad row back from the mouth face (measured)
+PH_PLUG_RUN   = 7.5       # RESERVED at XH's plug reach -- see above
+
+
+def ph_side_length(n):
+    """Overall body length (mm) of an n-circuit S<n>B-PH-SM4-TB."""
+    return PH_PITCH * (n - 1) + 6.0
+
+
+def jst_ph_side_header(n, *, mated=False, plug_run=PH_PLUG_RUN):
+    """Dummy side-entry SMT PH header (S<n>B-PH-SM4-TB).
+
+    Frame matches jst_xh_side_header so the two are interchangeable at a call
+    site: the board's top face is z=0 and the connector rises +Z; the MOUTH FACE
+    is y=0 with the body extending +Y, so the plug arrives travelling +Y and
+    `mated=True` adds its envelope on -y. Centred on x=0 along the row.
+
+    SMT, so there are NO post tails below the board -- which is usually the
+    reason this part is chosen over a through-hole side-entry XH."""
+    L = ph_side_length(n)
+    body = _block(L, PH_SIDE_D, PH_SIDE_H, 0.0, PH_SIDE_D / 2, 0.0)
+    if mated:
+        body = body.union(_block(L, plug_run, PH_SIDE_H, 0.0, -plug_run / 2, 0.0))
+    return body
