@@ -73,14 +73,29 @@ def bbox_overlap(a, b, tol=0.05) -> bool:
 
 
 def common_volume(sa, sb) -> float:
-    """Volume (mm^3) of the boolean intersection of two cq.Shapes; 0 on failure."""
+    """Volume (mm^3) of the boolean intersection of two cq.Shapes.
+
+    NaN when the boolean could not be evaluated -- which is NOT the same fact as
+    zero and must never be flattened into it. This returned 0.0 on failure, and the
+    failure mode is silent in both directions: a null result shape MEASURES as zero
+    volume without raising, so the `except` below never even ran. A coil swept
+    through a tenon wall came back "clean".
+
+    Worse, the failures are not random. A boolean fails on awkward geometry -- a
+    swept helix, a thin sliver, a tangency -- and awkward-AND-interpenetrating is
+    precisely the pair a gate exists to catch. Fail LOUD; the caller reports NaN
+    separately from a volume.
+    """
     try:
-        common = BRepAlgoAPI_Common(sa.wrapped, sb.wrapped).Shape()
+        op = BRepAlgoAPI_Common(sa.wrapped, sb.wrapped)
+        common = op.Shape()
+        if not op.IsDone() or common.IsNull():
+            return float("nan")
         props = GProp_GProps()
         BRepGProp.VolumeProperties_s(common, props)
         return props.Mass()
     except Exception:
-        return 0.0
+        return float("nan")
 
 
 def _candidate_pairs(bboxes):
@@ -276,9 +291,15 @@ def _scan(components, jobs, min_vol=None, cache=None):
 
     raw = list(computed) + [(v, i, j) for (i, j), v in known.items()]
     if cache:
-        _cache_save(cache, cached, {keys[(i, j)]: v for v, i, j in raw if (i, j) in keys},
+        # NaN (the boolean did not evaluate) is NOT a result and must not be cached:
+        # it would freeze one run's failure into every later run, and the caller has to
+        # see the pair as unchecked each time. `v == v` is the not-NaN test.
+        _cache_save(cache, cached,
+                    {keys[(i, j)]: v for v, i, j in raw if (i, j) in keys and v == v},
                     last_run + 1)
-    return [(v, names[i], names[j]) for v, i, j in raw if v > eps]
+    # keep NaN through the threshold: every comparison against it is False, so a plain
+    # `> eps` would silently drop exactly the pairs that could not be checked
+    return [(v, names[i], names[j]) for v, i, j in raw if v > eps or v != v]
 
 
 def default_jobs() -> int:
@@ -299,11 +320,15 @@ def run(components, is_intended, jobs=None, show_all=False, min_vol=None,
     pairs = _scan(components, jobs, min_vol, cache)
     dt = time.perf_counter() - t0
 
-    bad, ok = [], []
+    bad, ok, failed = [], [], []
     for vol, na, nb in pairs:
+        if vol != vol:                       # NaN: the boolean did not evaluate
+            failed.append((na, nb))
+            continue
         (ok if is_intended(na, nb) else bad).append((vol, na, nb))
     bad.sort(reverse=True)
     ok.sort(reverse=True)
+    failed.sort()
 
     mode = "serial" if jobs <= 1 else f"{jobs} workers"
     print(f"checked {len(components)} components for overlaps ({mode}, {dt:.1f}s)")
@@ -316,4 +341,12 @@ def run(components, is_intended, jobs=None, show_all=False, min_vol=None,
         print(f"   {vol:9.1f} mm^3   {na:14} <-> {nb}")
     if not bad:
         print("   none - clean!")
-    return len(bad)
+    if failed:
+        # NOT clean and NOT dismissable. An unevaluable pair is an unknown, and an
+        # unknown in a gate counts against it -- that is the whole lesson here.
+        print(f"\n== COULD NOT BE CHECKED ({len(failed)}) -- boolean FAILED, "
+              f"treat as suspect ==")
+        for na, nb in failed:
+            print(f"   {'  ?  ':>9}       {na:14} <-> {nb}")
+        print("   re-check these by sampling points (shape.isInside), not by volume.")
+    return len(bad) + len(failed)
