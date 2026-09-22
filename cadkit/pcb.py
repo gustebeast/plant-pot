@@ -238,31 +238,26 @@ def jst_xh_side_header(n, *, smt=True, mated=False, plug_run=7.5):
 # carrying more than four circuits AND surface mount AND side entry has no XH
 # option at all (the lever sensor board's trunk is the case that forced this).
 #
-# PROVENANCE, because these are not all the same grade of number:
-#   MEASURED off KiCad's own footprints (drawn from JST's drawing), and checked
-#   across two sizes so the formula is not fitted to one point --
-#     body length  = 2.0(n-1) + 6.0   (4 way 12.00, 8 way 20.00)
-#     body depth   = 7.70 along the mating axis
-#     the SMT pad row sits 0.40 back from the mouth face
-#   RESERVED, not measured: the HEIGHT above the board and the mated plug's
-#     reach. JST publishes both on the ePH drawing, whose PDF text is encoded
-#     with a shifted font map we cannot read, so rather than guess a number
-#     these take XH's figures -- which are LARGER, PH being the smaller series.
-#     Over-reserving is the safe error here in the same way it is for XH_SIDE
-#     above: the numbers exist to keep plastic away, and the only thing a
-#     too-big envelope costs is a slightly deeper relief pocket.
-#     ⚠ Read them off the drawing and tighten before anything depends on the
-#     clearance being TIGHT rather than on it being sufficient.
+# PROVENANCE: JST's own ePH drawing (jst-mfg.com/product/pdf/eng/ePH.pdf, read
+# 2026-09-21 by RENDERING the pages -- the PDF's text layer uses a shifted font
+# map, which is why these were placeholders borrowed from XH until now):
+#   p.4 "Header (SMT type) / Side entry": B = 2.0(n-1) + 5.9 (S8B 19.9),
+#       height 5.5 above the board, body 6.0 deep, (2.6) solder tabs behind it
+#   p.2 "Assembly layout / Side entry": mated pair (9.6) long overall, (5.5) tall
+#       -> the plug stands 9.6 - 6.0 = 3.6 proud of the mouth
+#   p.3 "Housing": PHR-n is 6.85 long along the mating axis x 4.5 thick
+#   (the TOP-entry B*B-PH-SM4-TB is a different part: 6.6 tall, 5.0 deep.)
 PH_PITCH      = 2.0
-PH_SIDE_D     = 7.70      # body depth along the mating axis (measured)
-PH_SIDE_H     = XH_SIDE_H  # RESERVED at XH's 7.0 -- see above
-PH_ROW_OFF    = 0.40      # pad row back from the mouth face (measured)
-PH_PLUG_RUN   = 7.5       # RESERVED at XH's plug reach -- see above
+PH_SIDE_D     = 6.0       # body depth along the mating axis (JST p.4)
+PH_TAB_D      = 2.6       # solder tabs behind the body, flat on the board (JST p.4)
+PH_SIDE_H     = 5.5       # height above the board (JST p.4; the mated pair too, p.2)
+PH_ROW_OFF    = 0.40      # pad row back from the mouth face (KiCad footprint)
+PH_PLUG_RUN   = 9.6 - PH_SIDE_D   # 3.6: the mated plug past the mouth (JST p.2)
 
 
 def ph_side_length(n):
     """Overall body length (mm) of an n-circuit S<n>B-PH-SM4-TB."""
-    return PH_PITCH * (n - 1) + 6.0
+    return PH_PITCH * (n - 1) + 5.9     # JST p.4, dimension B
 
 
 def jst_ph_side_header(n, *, mated=False, plug_run=PH_PLUG_RUN):
