@@ -195,17 +195,24 @@ py -3.12 -m tools.check_overlaps        # exit code = unintended pairs; 0 = clea
 py -3.12 -m tools.check_overlaps --all  # also list the intended contacts
 ```
 
-**Know what a standalone gate run actually costs.** The time the gate prints
-(~13-20 s) is only the *pairwise scan*. Everything before it is
-`collect_components()` — a COMPLETE model build, the same one `src.build` does.
-Measured on this project: `check_overlaps` end-to-end is **5 m 51 s**, of which
-13 s is checking. So gate-then-build pays for **two** full model builds.
+**Know what a standalone gate run actually costs.** The time the gate prints is
+only the *pairwise scan*. Everything before it is `collect_components()` — a
+COMPLETE model build, the same one `src.build` does. So gate-then-build pays for
+**two** full model builds, and the scan is the cheap end of it: with the
+incremental pair cache a warm scan is a few SECONDS (only pairs whose geometry
+changed are re-measured), against minutes to rebuild the model.
 
 The fix is to fold the scan into the build, which already has the components in
 memory: `src/build.py` runs it at the end of `_export_assembly()` (see
 `_report_overlaps`), making a whole-tree gate cost ~+15 s instead of ~+6 min, and
 the build's exit code non-zero on a NEW overlap (`OVERLAP_BASELINE` holds the
 accepted, separately-tracked ones). `--no-gate` / `--gate-full` override it.
+
+**Which checkers run by themselves.** A build runs the overlap gate and the sweep
+gate, and PRINTS the dead-code report (`tools/check_dead.py`, report-only — it
+never fails a merge). Everything else — ceilings, walls, beads, thin, part specs,
+cable pairs — is opt-in, so run the one that covers what you just touched: a new
+overhang means `check_ceilings`, a new wall means `check_walls`.
 `tools/check_overlaps.gate(comps, ...)` is the shared entry point both use — a
 project's `main()` builds then calls it; the build calls it with what it has.
 This is only safe because `overlap_check._detached_main()` stops the spawned
