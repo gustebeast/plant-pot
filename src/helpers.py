@@ -7,6 +7,7 @@ from src.dimensions.
 from __future__ import annotations
 
 import math
+import os
 import subprocess
 import sys
 import time
@@ -191,9 +192,16 @@ def heal(wp: cq.Workplane, label: str = "heal") -> cq.Workplane:
     fixer.SetMaxTolerance(1e-3)
     step(f"{label} fix", fixer.Perform)
     fixed = fixer.Shape()
-    unifier = ShapeUpgrade_UnifySameDomain(fixed, True, True, True)
-    step(f"{label} unify", unifier.Build)
-    unified = unifier.Shape()
+    # UnifySameDomain only merges coplanar/co-surface faces — cosmetic for
+    # printing — and scales very badly with face count: on a large slit pot
+    # (155→238 × 220, ~2k slits) it ran >1 h. Off by default; POT_UNIFY=1 opts back in.
+    if os.environ.get("POT_UNIFY", "0") == "1":
+        unifier = ShapeUpgrade_UnifySameDomain(fixed, True, True, True)
+        step(f"{label} unify", unifier.Build)
+        unified = unifier.Shape()
+    else:
+        print(f"  [{label} unify] skipped (set POT_UNIFY=1 to run)", flush=True)
+        unified = fixed
     if unified.ShapeType() == TopAbs_COMPOUND:
         wrapped = cq.Compound(unified)
     else:
