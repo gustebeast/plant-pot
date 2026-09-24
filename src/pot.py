@@ -60,7 +60,7 @@ from .dimensions import (
     DRAIN_CHANNEL_PERF_SOLID_HALF_DEG,
     BOOL_OVERSHOOT, RADIAL_CUT_LO, RADIAL_CUT_HI,
 )
-from .helpers import cyl, tube, poly_prism, compound, gable_prism, slit_prism
+from .helpers import cyl, tube, poly_prism, compound, gable_prism, slit_prism, step
 
 
 # ── 1. Solid shell ───────────────────────────────────────────────────────────
@@ -765,40 +765,7 @@ def _parallel_cone_intersect(add_wp: cq.Workplane, proxy_wp: cq.Workplane,
 # ── Assembly ─────────────────────────────────────────────────────────────────
 
 def _build_pot() -> cq.Workplane:
-    import subprocess
-    import sys
-    import time as _t
-    def _step(label, fn):
-        """Run fn() under a step label, printing a heartbeat every 30s so
-        long OCCT booleans aren't silent. The heartbeat is a SEPARATE PYTHON
-        SUBPROCESS (not a thread) because OCP holds the GIL through OCCT
-        calls — a thread-based heartbeat wouldn't tick during the very calls
-        we most want to observe. Subprocess ticks on the OS scheduler
-        regardless of GIL state."""
-        print(f"  [{label}] ...", flush=True)
-        t0 = _t.time()
-        hb_code = (
-            f"import sys, time\n"
-            f"t0 = time.time()\n"
-            f"try:\n"
-            f"    while True:\n"
-            f"        time.sleep(30.0)\n"
-            f"        sys.stdout.write('  [{label}] still working... %ds\\n' % (time.time() - t0))\n"
-            f"        sys.stdout.flush()\n"
-            f"except (KeyboardInterrupt, BrokenPipeError):\n"
-            f"    pass\n"
-        )
-        hb = subprocess.Popen([sys.executable, "-c", hb_code])
-        try:
-            r = fn()
-        finally:
-            hb.terminate()
-            try:
-                hb.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                hb.kill()
-        print(f"  [{label}] done in {_t.time() - t0:.1f}s", flush=True)
-        return r
+    _step = step
 
     # A tapered ROUND wall is an analytic cone. Cutting the perforation straight
     # into it — and unioning ribs onto the result — is pathologically slow: not

@@ -42,7 +42,7 @@ COLOR = {
 }
 
 from . import dimensions as d
-from .helpers import heal
+from .helpers import heal, step
 from . import pot as _pot_mod
 
 # Under POT_NOBUILD (set inside pot.py before spawning multiprocessing
@@ -51,8 +51,8 @@ from . import pot as _pot_mod
 if os.environ.get("POT_NOBUILD") == "1":
     pot = outer_pot = None
 else:
-    pot       = heal(_pot_mod.pot)
-    outer_pot = heal(_pot_mod.outer_pot)
+    pot       = heal(_pot_mod.pot, label="heal inner")
+    outer_pot = heal(_pot_mod.outer_pot, label="heal outer")
 
 _SHAPE_NOTE = f"{d.NUM_FACES}-sided" if d.IS_POLY else "round"
 _OD_NOTE = (f"Ø{d.POT_OD_BASE:.0f}-{d.POT_OD_TOP:.0f}" if d.IS_TAPER else f"Ø{d.POT_OD:.0f}")
@@ -92,9 +92,9 @@ PARTS = {
 def _export(name: str, mesh: bool = False) -> str:
     obj, filename, note = PARTS[name]
     path = str(OUT / filename)
-    export_step(obj, path)
+    step(f"export {filename}", lambda: export_step(obj, path))
     suffix = f"  ({note})" if note else ""
-    print(f"Wrote {path}{suffix}")
+    print(f"Wrote {path}{suffix}", flush=True)
     if mesh:
         _export_mesh(obj, path)
     return path
@@ -110,7 +110,7 @@ def _export_mesh(obj, step_path: str) -> str:
     cq.exporters.export(obj, mesh_path, tolerance=_MESH_TOL, angularTolerance=_MESH_ANG_TOL)
     dt = time.time() - t0
     mb = os.path.getsize(mesh_path) / 1e6
-    print(f"Wrote {mesh_path}  (mesh for slicing — {dt:.1f}s, {mb:.1f} MB)")
+    print(f"Wrote {mesh_path}  (mesh for slicing — {dt:.1f}s, {mb:.1f} MB)", flush=True)
     return mesh_path
 
 
@@ -165,7 +165,7 @@ def _export_assembly() -> None:
     if counter is not None:
         asm.add(counter, name="build_counter", color=color(COLOR["build_counter"]))
     path = str(OUT / "assembly.step")
-    asm.save(path)
+    step("export assembly.step", lambda: asm.save(path))
     print(f"Wrote {path}  [build #{build_n}]", flush=True)
     show(path)
 

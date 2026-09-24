@@ -7,9 +7,46 @@ from src.dimensions.
 from __future__ import annotations
 
 import math
+import subprocess
+import sys
+import time
+
 import cadquery as cq
 
 from .dimensions import BOOL_OVERSHOOT
+
+
+def step(label, fn):
+    """Run fn() under a step label, printing a heartbeat every 30s so
+    long OCCT operations aren't silent. The heartbeat is a SEPARATE PYTHON
+    SUBPROCESS (not a thread) because OCP holds the GIL through OCCT
+    calls — a thread-based heartbeat wouldn't tick during the very calls
+    we most want to observe. Subprocess ticks on the OS scheduler
+    regardless of GIL state."""
+    print(f"  [{label}] ...", flush=True)
+    t0 = time.time()
+    hb_code = (
+        f"import sys, time\n"
+        f"t0 = time.time()\n"
+        f"try:\n"
+        f"    while True:\n"
+        f"        time.sleep(30.0)\n"
+        f"        sys.stdout.write('  [{label}] still working... %ds\\n' % (time.time() - t0))\n"
+        f"        sys.stdout.flush()\n"
+        f"except (KeyboardInterrupt, BrokenPipeError):\n"
+        f"    pass\n"
+    )
+    hb = subprocess.Popen([sys.executable, "-c", hb_code])
+    try:
+        r = fn()
+    finally:
+        hb.terminate()
+        try:
+            hb.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            hb.kill()
+    print(f"  [{label}] done in {time.time() - t0:.1f}s", flush=True)
+    return r
 
 
 def cyl(d: float, h: float, z: float = 0.0) -> cq.Workplane:
@@ -136,12 +173,14 @@ def slot_prism(length: float, height: float, x_lo: float, x_hi: float) -> cq.Wor
     )
 
 
-def heal(wp: cq.Workplane) -> cq.Workplane:
+def heal(wp: cq.Workplane, label: str = "heal") -> cq.Workplane:
     """OCCT ShapeFix + ShapeUpgrade pass before STEP export: cleans up
     minor face/edge tolerance debris that long boolean pipelines leave
     behind (and that strict STEP importers complain about), and merges
     same-domain adjacent faces/edges. Also collapses a one-solid Compound
-    down to a plain Solid."""
+    down to a plain Solid. Each OCCT pass is logged as its own step
+    (``[<label> fix]`` / ``[<label> unify]``) — on a densely perforated
+    pot these take minutes and were previously silent."""
     from OCP.ShapeFix import ShapeFix_Shape  # type: ignore[import]
     from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain  # type: ignore[import]
     from OCP.TopAbs import TopAbs_COMPOUND
@@ -150,10 +189,10 @@ def heal(wp: cq.Workplane) -> cq.Workplane:
     fixer = ShapeFix_Shape(shape)
     fixer.SetPrecision(1e-4)
     fixer.SetMaxTolerance(1e-3)
-    fixer.Perform()
+    step(f"{label} fix", fixer.Perform)
     fixed = fixer.Shape()
     unifier = ShapeUpgrade_UnifySameDomain(fixed, True, True, True)
-    unifier.Build()
+    step(f"{label} unify", unifier.Build)
     unified = unifier.Shape()
     if unified.ShapeType() == TopAbs_COMPOUND:
         wrapped = cq.Compound(unified)
