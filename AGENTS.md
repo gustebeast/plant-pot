@@ -160,12 +160,15 @@ zero-maintenance:
   silently — you tune the coupon, the real part doesn't change, and the test stops being
   representative. The coupon should be *the real geometry*, just re-oriented for printing
   (match the real part's PRINT ORIENTATION — that's usually the whole point of the test).
-- **Name every test part `test_*.step` and export it to the PROJECT ROOT, next to the
-  regular part STEPs** (`test_nut.step`, `test_joint_tenon.step`, `test_cap_socket.step`).
-  The `test` prefix is what separates coupons from shippable parts in the folder
-  listing, and the slicer finds them in the same place as everything else. Never
-  ship a coupon STEP under any other name, and never scatter them into `tools/`
-  or scratch dirs.
+- **Name every test part `test_*.step` and keep it in `src/test/`, beside the module
+  that builds it** (`src/test/pin_gauge.py` -> `src/test/test_pin_gauge.step`). The
+  `test` prefix still separates coupons from shippable parts, and a coupon is then
+  ONE self-contained thing — module and STEP together — that you can delete in a
+  single stroke when it has served its purpose. Coupons are short-lived by nature;
+  mixing them in with the real part STEPs means the dead ones linger and nobody is
+  sure which still matter. Never ship a coupon STEP under any other name, and never
+  scatter them into `tools/` or scratch dirs.
+  (This replaces the older rule of exporting coupons to the PROJECT ROOT.)
 - **RENDER coupons IN the assembly too, off to the side** (`.add(coupon.translate((90,0,0)),
   name="…_coupon", …)`) so they're rebuilt with every `src.build`, visible in the one
   FreeCAD tab, and can't silently diverge from the model. Give them a non-TPU colour and
