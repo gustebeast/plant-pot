@@ -13,8 +13,8 @@ module paths and everything else are identical.
 ## Skills & shared code
 Two layers of reusable capability back a cadkit project:
 
-- **The `parametric-3d-printing` skill** lives in the Claude **skills folder**
-  (`~/.claude/skills/`). Skills are self-contained playbooks Claude Code loads on
+- **The `parametric-3d-printing` skill** lives in the agent's **skills folder**
+  (under the home directory). Skills are self-contained playbooks the agent loads on
   demand; this one is the general CadQuery-for-3D-printing workflow (requirements
   gathering, real-world dimension research, print-friendly rules, tolerances,
   supports). It's the "CAD skill" / "cad-skill" the notes here refer to, and it
@@ -470,7 +470,7 @@ solid** with a point-probe / cross-section, not on paper.
 ## Token efficiency
 Delegate heavy, read-only exploration to **subagents**; run **`/compact`** at
 natural breakpoints (after a part is finalised) rather than near the limit.
-Claude Code has no fixed-percentage auto-compact threshold, so this is a habit,
+The agent harness has no fixed-percentage auto-compact threshold, so this is a habit,
 not a setting.
 
 ## Multi-agent collaboration (git worktrees + merge requests)
