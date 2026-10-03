@@ -41,6 +41,15 @@ Two layers of reusable capability back a cadkit project:
     (+Y build) mating a mortise printed flat (−Z→+Z) is `ramp=True, hook_h=…`
     (print-validated); plain 45°-everywhere profiles cam apart along the up-ramp
     diagonal — don't reinvent this joint, call the library.
+  - `cadkit.board_geom` / `cadkit.board_check` / `cadkit/kicad_geom.py` /
+    `cadkit/kicad_silk.py` — **circuit boards shared between KiCad and the CAD**; read
+    **`cadkit/PCB_README.md`** before designing or modelling any PCB. The board in the
+    assembly is READ BACK from the routed `.kicad_pcb` (`kicad_geom.py` under KiCad's
+    Python → a tracked `<board>.geom.json` → `Boards(geom_dir).solid(board)`), never
+    typed in by hand, and `board_check.check` gates that the CAD draws the routed board.
+    The same README carries the PCB design guidance (mounting, connector choice,
+    layout, pre-order checklist). `cadkit.pcb` is the plastic side: `pcb_cradle` and
+    drawing-accurate JST headers.
   - `cadkit.fasteners` — shared M2/M4 hole/insert dims · `cadkit.cq_colors` — baked STEP colours
   - `cadkit.freecad` — the FreeCAD viewer hub (`from cadkit.freecad import show`) + `view_assembly.cmd` launcher
   - `cadkit.scratch` — the fast per-part iteration loop: cache the surroundings,
