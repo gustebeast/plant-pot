@@ -1034,6 +1034,60 @@ def fab_capability(ctx):
         out.append(("pad gap", None, "SMD pad gaps not measured on this KiCad (%s): check the "
                     "finest-pitch part by hand" % type(e).__name__))
 
+    # an open via in an SMD pad wicks the paste down the barrel and starves the joint
+    if smd and vias and not fab.get("via_in_pad"):
+        inpad, touch, thermal = [], [], 0
+        try:
+            for xy, layer, pad, name in smd:
+                # Where a via in a pad is harmless or wanted: a pad with NO PASTE (a test
+                # pad: nothing is soldered), an exposed pad or its unnumbered paste
+                # sub-pads (A8 asks for vias there), and any land of 4 mm2 or more -- a
+                # 0.3 mm barrel through 1.6 mm holds 0.11 mm3, a quarter of what a 0.12 mm
+                # stencil prints on 4 mm2; on a 1.4 x 1.2 crystal pad it is half.
+                if not (pad.IsOnLayer(pcbnew.F_Paste) or pad.IsOnLayer(pcbnew.B_Paste)):
+                    continue
+                _sz = _pad_size(pad)
+                _fp = pad.GetParentFootprint()
+                _ep = bool(_fp is not None and re.search(
+                    r"\dEP|_EP\d|-EP", _fp.GetFPIDAsString().split(":")[-1]))
+                _big = 0.0
+                if _ep:
+                    _big = max(_pad_size(q)[0] * _pad_size(q)[1] for q in _fp.Pads()
+                               if q.GetAttribute() == pcbnew.PAD_ATTRIB_SMD)
+                is_thermal = (_sz[0] * _sz[1] >= 4.0
+                              or (_ep and (not pad.GetNumber() or _sz[0] * _sz[1] >= _big - 1e-6)))
+                for t in b.GetTracks():
+                    if t.GetClass() != "PCB_VIA":
+                        continue
+                    pos = t.GetPosition()
+                    if abs(MM(pos.x) - xy[0]) > 6.0 or abs(MM(pos.y) - xy[1]) > 6.0:
+                        continue
+                    if pad.HitTest(pos, int(t.GetDrillValue() / 2)):
+                        if is_thermal:
+                            thermal += 1
+                        else:
+                            inpad.append(name)
+                    elif pad.HitTest(pos, int(pcbnew.FromMM(_via_dia(t) / 2.0))):
+                        touch.append(name)
+            if inpad:
+                out.append(("via in pad", False, "open via hole inside SMD pad %s (%d place(s)): "
+                            "solder wicks down it -- move the via off the pad, or order "
+                            "filled-and-capped vias and say so (quality.fab via_in_pad)"
+                            % (inpad[0], len(inpad))))
+            else:
+                out.append(("via in pad", True, "no via hole inside an SMD pad, %d via(s) checked"
+                            % len(vias)))
+            if thermal:
+                out.append(("thermal vias", None, "%d via(s) in large or thermal pads (4 mm2 "
+                            "or more, or an exposed pad): expected there" % thermal))
+            if touch:
+                out.append(("via at pad", None, "%d via ring(s) touch an SMD pad (first: %s): fine "
+                            "if the via is tented, which the fab does by default"
+                            % (len(touch), touch[0])))
+        except Exception as e:          # noqa: BLE001
+            out.append(("via in pad", None, "vias in pads not checked on this KiCad (%s)"
+                        % type(e).__name__))
+
     # silk text that will be printed
     silk = (pcbnew.F_SilkS, pcbnew.B_SilkS)
     texts = []
