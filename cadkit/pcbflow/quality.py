@@ -291,6 +291,14 @@ class _Net:
         return (w,) + ((info[1], info[2], info[3]) if info else ("pour", "-", (0.0, 0.0)))
 
 
+def _rail_volts(net):
+    """The voltage a rail's NAME states: "+24V" 24, "+3V3A" 3.3, "+5V_PI" 5, "VBUS" 5."""
+    m = re.match(r"^\+?(\d+)V(\d*)", net)
+    if m:
+        return float("%s.%s" % (m.group(1), m.group(2) or "0"))
+    return 5.0 if net.upper().startswith("VBUS") else None
+
+
 @rule("A1")
 def power_paths(ctx):
     out = []
@@ -332,7 +340,12 @@ def power_paths(ctx):
                 # and thin enough to starve the load
                 ohm = g.resistance(p["from"], dst) or 0.0
                 drop_mv = ohm * amps * 1000.0
-                limit_mv = float(p.get("max_drop_mv", ctx.q.get("max_drop_mv", 50.0)))
+                limit_mv = p.get("max_drop_mv", ctx.q.get("max_drop_mv"))
+                if limit_mv is None:
+                    volts = _rail_volts(net)
+                    pct = float(ctx.q.get("max_drop_pct", 2.0))
+                    limit_mv = volts * 10.0 * pct if volts else 50.0
+                limit_mv = float(limit_mv)
                 if drop_mv > limit_mv:
                     out.append((subject + " drop", False,
                                 "%s %s -> %s, %.2f A: %.0f mOhm of track drops %.0f mV "
@@ -372,6 +385,8 @@ def decoupling(ctx):
     out = []
     for net in sorted(ctx.power):
         rows = {}                    # subject -> (limit, best distance, cap ref)
+        active = any(_prefix(r) in ("U", "Q", "D", "L", "K", "F", "FB", "R")
+                     for r, _n, _p in ctx.by_net[net])
         for ref, num, pad in ctx.by_net[net]:
             kind = _prefix(ref)
             if kind not in ("U", "J", "P"):
@@ -389,6 +404,11 @@ def decoupling(ctx):
             why = exempt.get(subject) or exempt.get(subject.split(".")[0])
             if why:
                 out.append((subject, None, "exempt: %s" % why))
+            elif not active and (dist is None or dist > limit):
+                # a rail that only passes between connectors has no load here to step
+                out.append((subject, None,
+                            "%s passes through this board with no load on it: no "
+                            "capacitor required at %s" % (net, subject)))
             elif dist is not None and dist <= limit:
                 out.append((subject, True, "%s: %s at %.1f mm" % (net, cref, dist)))
             else:
@@ -674,9 +694,9 @@ def crystal_distance(ctx):
             nvia = sum(1 for t in ctx.board.GetTracks()
                        if t.GetClass() == "PCB_VIA" and t.GetNetname() == net)
             if nvia:
-                out.append(("%s vias" % net, False,
-                            "%s changes layer (%d via(s)): keep a crystal's traces on the "
-                            "crystal's own layer" % (net, nvia)))
+                out.append(("%s vias" % net, None,
+                            "%s changes layer (%d via(s)): better kept on the crystal's "
+                            "own layer" % (net, nvia)))
             out.append(("%s.%s" % (ref, pad.GetNumber()), ok,
                         "%s.%s to %s on %s: %.1f mm%s"
                         % (ref, pad.GetNumber(), pin, net, d,
@@ -774,6 +794,57 @@ def value_spelling(ctx):
     return out
 
 
+# ── which manual rules a board cannot need ───────────────────────────────────────────
+# A manual rule about a kind of circuit is signed BY THE SCRIPT when the board has none of
+# the parts that make that circuit, so a passive board is not asked thirty questions about
+# regulators. Conservative on purpose: absence of the part, never a guess about its use.
+# A signature in the board's notes always wins.
+def _census(ctx):
+    kinds = collections.Counter(_prefix(r) for r in ctx.fps)
+    names = [fp.GetFPIDAsString().split(":")[-1] for fp in ctx.fps.values()]
+    nets = [n.upper() for n in ctx.by_net]
+    usb = any({"A5", "B5"} <= {p.GetNumber() for p in fp.Pads()} for fp in ctx.fps.values()) \
+        or any(re.search(r"USB|(^|_)D[PM]$|D[+-]$|VBUS", n) for n in nets)
+    return {
+        "ic": kinds["U"] > 0,
+        "active": kinds["U"] + kinds["Q"] > 0,
+        "inductor": kinds["L"] > 0,
+        "ferrite": kinds["FB"] > 0,
+        "transistor": kinds["Q"] > 0,
+        "crystal": kinds["Y"] + kinds["X"] > 0,
+        "switch": kinds["SW"] + kinds["S"] + kinds["K"] > 0,
+        "polarised": kinds["D"] + kinds["LED"] > 0 or any(n.startswith("CP_") for n in names),
+        "usb": usb,
+        "bus": kinds["U"] > 0 or any(I2C.search(n) or "CAN" in n for n in nets),
+        "thermal": kinds["U"] + kinds["Q"] > 0,
+    }
+
+
+NOT_APPLICABLE = {      # rule -> (census key that must be true for it to apply, the reason)
+    "M2": ("polarised", "no diode, LED or polarised capacitor"),
+    "M6": ("ic", "no IC: no high-speed bus"),
+    "M7": ("ic", "no IC"),
+    "M8": ("ic", "no IC: no configuration pins"),
+    "M13": ("inductor", "no inductor: no switching regulator"),
+    "M14": ("inductor", "no inductor"),
+    "M15": ("ic", "no IC: no regulator"),
+    "M17": ("ferrite", "no ferrite bead"),
+    "M18": ("active", "no IC or transistor to back-power"),
+    "M19": ("transistor", "no discrete transistor"),
+    "M20": ("bus", "no IC and no I2C or CAN net"),
+    "M21": ("ic", "no IC: no converter"),
+    "M22": ("ic", "no IC: no op-amp"),
+    "M23": ("usb", "no USB connector or net"),
+    "M24": ("crystal", "no crystal"),
+    "M25": ("thermal", "no IC or transistor to cool"),
+    "M26": ("ic", "no IC: no directional link ends here"),
+    "M27": ("ic", "no IC: no strap or debug pins"),
+    "M35": ("ic", "no IC"),
+    "M39": ("ic", "no IC: no unused pins"),
+    "M41": ("switch", "no switch, button or relay"),
+}
+
+
 def doc_rules():
     """({A id: title}, [(M id, title, text)]) parsed from PCB_QUALITY.md."""
     auto, manual = {}, []
@@ -829,8 +900,15 @@ def run(stem, verbose=True, brief=False):
             say("        -> %s" % HINT[rid])
     signed = ctx.q.get("manual", {}) or {}
     opens = 0
+    census = _census(ctx)
     for mid, title, text in manual:
         note = signed.get(mid)
+        key, why = NOT_APPLICABLE.get(mid, (None, None))
+        if not note and key and not census[key]:
+            results.append({"rule": mid, "subject": title, "status": "n/a", "text": why})
+            if not brief:
+                say("  n/a  %-4s %s -- %s" % (mid, title, why))
+            continue
         results.append({"rule": mid, "subject": title, "status": "signed" if note else "OPEN",
                         "text": note or text})
         if note:
