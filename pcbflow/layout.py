@@ -3517,7 +3517,13 @@ def _stitch_plane_pads(board, nets_wanted, outline, via_d=0.6, via_drill=0.3,
         # the first time, each drew a stitch via, and the re-plan cost a TIA net.)
         if "%s.%s" % (fp.GetReference(), pad.GetNumber()) in allow:
             continue
-        if (not _is_pth
+        # ⚠ AND THE LAND HAS TO BE BIG ENOUGH TO LOSE THE PASTE (quality A12, 2026-10-04).
+        # Width alone let a 1.4 x 1.2 crystal ground pad take a via: its barrel holds half
+        # the paste that pad is printed with. 4 mm2 is where the barrel is a quarter of it.
+        # A pad with no paste (a test pad) has nothing to lose and keeps the old test.
+        _area_ok = (pcbnew.ToMM(pad.GetSize().x) * pcbnew.ToMM(pad.GetSize().y) >= 4.0
+                    or not (pad.IsOnLayer(pcbnew.F_Paste) or pad.IsOnLayer(pcbnew.B_Paste)))
+        if (not _is_pth and _area_ok
                 and min(pad.GetSize().x, pad.GetSize().y) >= pcbnew.FromMM(via_d + 0.6)):
             v = pcbnew.PCB_VIA(board)
             v.SetPosition(pc)
