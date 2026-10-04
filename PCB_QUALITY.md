@@ -43,7 +43,7 @@ Everything a board declares lives in its generator, under `BOARD_NOTES["quality"
         {"net": "+3V3", "from": "U6.5", "to": "U1.19", "amps": 0.25},
     ],
     "temp_rise_c": 10, "copper_oz": 1, "inner_oz": 0.5,          # defaults
-    "max_drop_mv": 50,                     # default; or per path: {"max_drop_mv": 20}
+    "max_drop_pct": 2,                     # default; or "max_drop_mv", also per path
     "not_power": ["+VREF_SENSE"],          # looks like a rail by name, carries no current
     # A2 -- how close a bypass capacitor must be, and the pins that need none
     "decoupling": {"ic_mm": 5.0, "connector_mm": 25.0,
@@ -70,7 +70,9 @@ Everything a board declares lives in its generator, under `BOARD_NOTES["quality"
 pad, load pads, amps). Along the best copper path between them, the narrowest point must
 be wide enough for that current (IPC-2221 at the declared temperature rise; inner layers
 need about twice the width of outer ones), **and** the track resistance along the path
-must not drop more than `max_drop_mv` (50 mV) at that current. A net that looks like a
+must not drop more than `max_drop_pct` (2 %) of the rail the net's name states — or
+`max_drop_mv`, per board or per path, where that is the wrong measure (50 mV when the name
+states no voltage). A net that looks like a
 rail by name and declares nothing **fails** — so a new rail cannot be added without
 stating its current. A net whose name says it is not connected (`_NC`) is not a rail.
 
@@ -93,7 +95,8 @@ pour it. Then check **M3** (the return path).
 
 **Rule.** Each IC pin (`U*`) on a supply net has a capacitor to ground on that net within
 `ic_mm` (5 mm). Each connector pin (`J*`, `P*`) on a supply net — every power input and
-output of the board — has one within `connector_mm` (25 mm).
+output of the board — has one within `connector_mm` (25 mm). A rail that only passes
+between connectors, with no part on it, is reported and not failed.
 
 **Why.** A load that steps its current pulls the rail down for as long as the inductance
 between it and the nearest charge lasts. The capacitor is that charge; a capacitor on the
@@ -200,7 +203,8 @@ load capacitance (the frequency is off), an antenna, and a pickup for whatever r
 it; marginal oscillators fail to start. The load-capacitor arithmetic is **M24**.
 
 **How it is checked.** Pad-to-pin distance on each crystal net that reaches an IC
-directly; a via on a crystal net also fails (the traces stay on the crystal's layer).
+directly. A via on a crystal net is reported as a note: worth removing, not worth a
+re-route on its own at the frequencies these boards use.
 
 ### A10 — A USB device presents no more than 10 µF on VBUS
 
@@ -235,9 +239,12 @@ needs to be one is **M42**.
 ## Manual checks
 
 Sign each in `quality["manual"]` with what you checked against. If a rule does not apply
-to the board, sign it with the reason ("no external connectors", "no switching
-regulator"). M1–M12 apply to every board; M13 onward are each about one kind of circuit,
-so most boards sign several of them in a line. Thresholds quoted here are starting points
+to the board, sign it with the reason ("no external connectors"). M1–M12 apply to
+nearly every board; M13 onward are each about one kind of circuit. **The script marks a
+rule `n/a` itself when the board has none of the parts that circuit needs** (no inductor:
+no switching-regulator rules; no IC: no strap pins, op-amps or errata; no crystal, no
+USB, no transistor, no switch, likewise) — the table is `NOT_APPLICABLE` in
+`quality.py`. Anything it cannot tell from the parts list stays `OPEN` for you. Thresholds quoted here are starting points
 from published guidance: where a part's own datasheet says otherwise, the datasheet wins.
 
 - **M1 — Mating connectors agree pin for pin.** For every cable and board-to-board joint,
@@ -261,7 +268,7 @@ from published guidance: where a part's own datasheet says otherwise, the datash
 - **M5 — Nothing is run past its ratings.** Every part on a rail survives that rail's
   WORST case — a fresh battery, a supply's tolerance, an inductive spike, a hot-plug —
   with margin. Check absolute-maximum voltage on every pin a rail can reach, GPIO levels
-  between domains, and regulator dissipation (Vin − Vout) × I against the package.
+  between domains. (Heat is **M25**.)
 - **M6 — High-speed buses are matched and have an unbroken reference.** Clocked parallel
   buses and anything above ~50 MHz or with fast edges (ULPI, SDIO, RGMII, SPI at tens of
   MHz) are in `match` groups with a budget derived from the bit time. Each runs over a
@@ -287,7 +294,7 @@ from published guidance: where a part's own datasheet says otherwise, the datash
   or part under the screw head, washer or standoff — measured hardware, both faces, which
   differ; parts the fab cannot place are zero.
 - **M12 — The order is right.** Every part number read off its listing and in stock
-  today, with what it mates to; rotations checked in the fab's previewer for every
+  today, with what it mates to (lifecycle and alternates are **M42**); rotations checked in the fab's previewer for every
   polarised and multi-pin part; board name and revision in silk; order-form settings
   (mask colour, mark removal, rail edges) written down.
 - **M13 — Switching regulators are laid out as the datasheet draws them.** The input
@@ -389,8 +396,8 @@ from published guidance: where a part's own datasheet says otherwise, the datash
   is ticked.
 - **M31 — Markings survive assembly.** Pin-1 and polarity marks are visible with the part
   fitted (outside the body, not under it); text is at least the fab's minimum height and
-  stroke and not over pads, holes or the board edge; the board's name, revision and date
-  are on it. Every LED, button, switch and connector a person uses says what it is for,
+  stroke and not over pads, holes or the board edge; the board's name and revision are
+  on it (`kicad_silk.py` prints both). Every LED, button, switch and connector a person uses says what it is for,
   and connector pins that will be wired or probed carry their signal names (with
   direction where it is not obvious: `RX <`, `TX >`).
 - **M32 — Connectors are the series the harness uses, and rated for it.** Pitch measured
@@ -418,7 +425,7 @@ from published guidance: where a part's own datasheet says otherwise, the datash
   cable.
 - **M37 — The files sent are the board that was checked.** Zones were refilled and DRC
   re-run immediately before export; gerbers and drill were exported together, from that
-  state; the package was opened in an independent gerber viewer and looked at, layer by
+  state (`fab_package.py` does both and checks the drill file against the board); the package was opened in an independent gerber viewer and looked at, layer by
   layer, with the drills over the copper. Stack-up, finish and any controlled impedance
   are stated on the order.
 - **M38 — Nothing is stressed, and everything can be reached.** Ceramic capacitors are
