@@ -4462,6 +4462,33 @@ def build(stem):
         _edge_rect(board, *notes["outline_mm"])
     for h in notes.get("cutouts", ()):
         _cutout(board, h["xy"][0], h["xy"][1], h["d"])
+        # "head_d": the screw HEAD (or washer, or standoff) that bears on the board round
+        # this hole. Tracks and vias are kept out from under it -- solder mask is not
+        # insulation against a steel head torqued down on a live track -- on the face it
+        # bears on: "head_side" is "front" (default), "back" or "both". "head_margin"
+        # (default 0.2) is added to the head's radius for the screw's play in its hole.
+        if h.get("head_d"):
+            _r = float(h["head_d"]) / 2.0 + float(h.get("head_margin", 0.2))
+            _side = h.get("head_side", "front")
+            _ls = pcbnew.LSET()
+            if _side in ("front", "both"):
+                _ls.AddLayer(pcbnew.F_Cu)
+            if _side in ("back", "both"):
+                _ls.AddLayer(pcbnew.B_Cu)
+            _poly = pcbnew.SHAPE_LINE_CHAIN()
+            for _i in range(32):
+                _a = 2.0 * math.pi * _i / 32.0
+                _poly.Append(_to_board(h["xy"][0] + _r * math.cos(_a), h["xy"][1] + _r * math.sin(_a)))
+            _poly.SetClosed(True)
+            _z = pcbnew.ZONE(board)
+            _z.SetIsRuleArea(True)
+            _z.SetDoNotAllowTracks(True)
+            _z.SetDoNotAllowVias(True)
+            _z.SetDoNotAllowZoneFills(True)
+            _z.SetDoNotAllowPads(False)
+            _z.SetLayerSet(_ls)
+            _z.AddPolygon(_poly)
+            board.Add(_z)
     for r in notes.get("outline_holes", ()):
         _edge_hole(board, *r)
     for sl in notes.get("outline_slots", ()):
