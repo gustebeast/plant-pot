@@ -66,6 +66,8 @@ HINT = {
     "A6": "one 5.1 k 1% from EACH CC pin to ground on a device port",
     "A7": "one pull-up pair per bus: say where it is, and that it is the only one",
     "A8": "connect the pad as the datasheet says and put vias in it",
+    "A10": "keep 1-10 uF directly on VBUS; bulk goes behind a load switch or soft-start",
+    "A11": "write each value one way throughout the generator",
     "A9": "move the crystal and its load capacitors up against the oscillator pins",
     "A4": "read every pin against the maker's datasheet AND the footprint's pad numbering "
           "(top vs bottom view; a connector from its MATING face), then cite document and "
@@ -669,11 +671,106 @@ def crystal_distance(ctx):
                 continue
             d, pin = min(ics)
             ok = d <= limit
+            nvia = sum(1 for t in ctx.board.GetTracks()
+                       if t.GetClass() == "PCB_VIA" and t.GetNetname() == net)
+            if nvia:
+                out.append(("%s vias" % net, False,
+                            "%s changes layer (%d via(s)): keep a crystal's traces on the "
+                            "crystal's own layer" % (net, nvia)))
             out.append(("%s.%s" % (ref, pad.GetNumber()), ok,
                         "%s.%s to %s on %s: %.1f mm%s"
                         % (ref, pad.GetNumber(), pin, net, d,
                            "" if ok else " (limit %.0f) -- a long crystal trace is stray "
                                          "capacitance and an antenna" % limit)))
+    return out
+
+# ── A10: a USB device's VBUS capacitance is inside the inrush limit ──────────────────
+def _farads(value):
+    """"100n" / "4.7uF" / "4u7" / "22p" -> farads, or None."""
+    v = (value or "").strip().replace("µ", "u").replace(" ", "")
+    mult = {"p": 1e-12, "n": 1e-9, "u": 1e-6, "m": 1e-3}
+    m = re.match(r"^(\d+)([pnum])(\d+)", v)
+    if m:
+        return float("%s.%s" % (m.group(1), m.group(3))) * mult[m.group(2)]
+    m = re.match(r"^(\d+(?:\.\d+)?)([pnum])F?", v)
+    return float(m.group(1)) * mult[m.group(2)] if m else None
+
+
+@rule("A10")
+def usb_vbus_capacitance(ctx):
+    out = []
+    lo, hi = 1e-6, 10e-6
+    for ref in sorted(ctx.fps):
+        pads = {p.GetNumber(): p for p in ctx.fps[ref].Pads()}
+        if "A5" not in pads or "B5" not in pads or "A4" not in pads:
+            continue
+        cc = [pads[k].GetNetname() for k in ("A5", "B5")]
+        if not any(n and _resistors_to(ctx, n, ctx.grounds) for n in cc):
+            continue                        # not a device (sink) port: the limit is the sink's
+        vbus = pads["A4"].GetNetname()
+        if not vbus or NOT_CONNECTED.search(vbus):
+            continue
+        total, caps, unknown = 0.0, [], []
+        for cref, _n, _p in ctx.by_net[vbus]:
+            if _prefix(cref) != "C":
+                continue
+            if not ({p.GetNetname() for p in ctx.fps[cref].Pads()} & ctx.grounds):
+                continue
+            f = _farads(ctx.fps[cref].GetValue())
+            if f is None:
+                unknown.append(cref)
+            else:
+                total += f
+                caps.append(cref)
+        if unknown:
+            out.append((ref, False, "%s: cannot read the value of %s on %s"
+                        % (ref, ", ".join(unknown), vbus)))
+            continue
+        if total > hi:
+            ok, tail = False, (" -- over 10 uF at plug-in trips a host's inrush limit: put "
+                               "the rest behind a load switch or a soft-start")
+        elif total < lo:
+            # guidance, not the specification's hard limit: reported, never a FAIL
+            ok, tail = None, " -- under the 1 uF usually recommended on a device's VBUS"
+        else:
+            ok, tail = True, ""
+        out.append((ref, ok, "%s: %.1f uF directly on %s (%s)%s"
+                    % (ref, total * 1e6, vbus, ", ".join(sorted(caps)) or "no capacitor",
+                       tail)))
+    return out
+
+# ── A11: one value, one spelling ─────────────────────────────────────────────────────
+@rule("A11")
+def value_spelling(ctx):
+    """The same resistance or capacitance written two ways ("100n" and "0.1uF") is two
+    BOM lines, two feeders and a part that can drift apart."""
+    out = []
+    seen = collections.defaultdict(lambda: collections.defaultdict(list))
+    for ref, fp in ctx.fps.items():
+        kind = _prefix(ref)
+        if kind not in ("R", "C"):
+            continue
+        text = (fp.GetValue() or "").strip()
+        num = _ohms(text) if kind == "R" else _farads(text)
+        if num is None:
+            continue
+        # the VALUE token and whatever qualifies it ("10k" + "0.1%"): a different rating
+        # or tolerance is a different part on purpose, a different spelling of the same
+        # number is not
+        token = re.split(r"[\s/]", text, 1)[0]
+        qualifier = re.sub(r"\s+", "", text[len(token):].lower())
+        key = (kind, fp.GetFPIDAsString().split(":")[-1], "%.4g" % num, qualifier)
+        seen[key][token].append(ref)
+    for key in sorted(seen):
+        spellings = seen[key]
+        if len(spellings) > 1:
+            out.append(("/".join(sorted(spellings)), False,
+                        "%s in %s is written %s: one part, one spelling"
+                        % ("the same value", key[1],
+                           " and ".join("'%s' (%s)" % (t, ", ".join(sorted(r)[:3]))
+                                        for t, r in sorted(spellings.items())))))
+        else:
+            out.append((next(iter(spellings)), True, "one spelling"))
     return out
 
 
