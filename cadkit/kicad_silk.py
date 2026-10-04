@@ -201,12 +201,14 @@ def _net(pad):
     return n if n and not n.startswith("unconnected") else ""
 
 
-def silk(stem, rev=REV, dark=(), labels=None):
+def silk(stem, rev=REV, dark=(), labels=None, short=None):
     """Label `<stem>.kicad_pcb` in place. Returns the labels that found no free site."""
-    if labels is None and os.path.isfile(stem + ".board.json"):
+    if os.path.isfile(stem + ".board.json"):
         import json
         with open(stem + ".board.json", encoding="utf-8") as fh:
-            labels = json.load(fh).get("silk_labels", {})
+            _notes = json.load(fh)
+        labels = _notes.get("silk_labels", {}) if labels is None else labels
+        short = _notes.get("silk_name") if short is None else short
     board = pcbnew.LoadBoard(stem + ".kicad_pcb")
     name = os.path.basename(stem)
     old = [d for d in board.GetDrawings()
@@ -224,6 +226,7 @@ def silk(stem, rev=REV, dark=(), labels=None):
         pads = list(fp.Pads())
         net = _net(pads[0]) if pads else ""
         label = net if net and len(net) <= 10 else ref
+        label = (labels or {}).get(ref, label)      # the board's own word for it wins
         s = sides[fp.IsFlipped()]
         if s.place_legible(label, SIZE_TP, fp.GetPosition(), 5.0):
             done.append("%s=%s" % (ref, label))
@@ -246,7 +249,7 @@ def silk(stem, rev=REV, dark=(), labels=None):
     wanted.update(labels or {})
     for fp in fps:
         ref = fp.GetReference()
-        if ref not in wanted:
+        if ref not in wanted or ref.startswith("TP"):      # test pads were step 1
             continue
         s = sides[fp.IsFlipped()]
         if s.place_legible(wanted[ref], SIZE_TP, fp.GetPosition(), 10.0):
@@ -261,11 +264,19 @@ def silk(stem, rev=REV, dark=(), labels=None):
                              (sides[False].bbox[1] + sides[False].bbox[3]) // 2)
     reach = max(sides[False].bbox[2] - sides[False].bbox[0],
                 sides[False].bbox[3] - sides[False].bbox[1]) / 1e6
-    words = name.upper().split("_") + [rev]
+    # `silk_name` in the board's notes: a SHORT name for a board too small for its stem
+    # ("POGO FEM BOT" for leg_pogo_female_bottom). The revision is still appended.
+    words = (short.upper().split() if short else name.upper().split("_")) + [rev]
     forms = [" ".join(words)]
     if len(words) > 2:
         h = len(words) // 2
         forms.append(" ".join(words[:h]) + chr(10) + " ".join(words[h:]))
+    if len(words) > 3:
+        # a board a centimetre wide: three lines, then one word a line (the revision
+        # rides on the last word). Squarer blocks find a site where a long line cannot.
+        t = (len(words) + 2) // 3
+        forms.append(chr(10).join(" ".join(words[i:i + t]) for i in range(0, len(words), t)))
+        forms.append(chr(10).join(words[:-2] + [" ".join(words[-2:])]))
     for size, ident, back in [(z, f, b) for z in SIZES_ID for f in forms for b in (False, True)]:
         if sides[back].place(ident, size, centre, reach, step=0.5, optics=OPTICS_NAME_CLR):
             done.append("name %.1f mm (%s)" % (size, "back" if back else "front"))
