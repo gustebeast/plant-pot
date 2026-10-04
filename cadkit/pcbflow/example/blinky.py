@@ -118,6 +118,13 @@ BOARD_NOTES["quality"] = {
         "M30": "example board: not ordered",
         "M31": "name + revision in silk (kicad_silk); D1's cathode mark is outside its body",
         "M32": "footprint pitch 2.50 = XH; 5 mA against XH's 3 A contacts",
+        "M33": "one rail, one load: 5 mA from the bench supply",
+        "M34": "no logic signals; D1 anode to R1, cathode to ground",
+        "M35": "no parts with errata",
+        "M36": "no power leaves the board",
+        "M37": "example board: not ordered",
+        "M38": "C1 is 12 mm from the nearest edge and 13 mm from the screw; J1 plugs from "
+               "+Z with nothing above it",
     },
 }
 

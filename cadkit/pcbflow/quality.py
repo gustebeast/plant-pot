@@ -66,6 +66,7 @@ HINT = {
     "A6": "one 5.1 k 1% from EACH CC pin to ground on a device port",
     "A7": "one pull-up pair per bus: say where it is, and that it is the only one",
     "A8": "connect the pad as the datasheet says and put vias in it",
+    "A9": "move the crystal and its load capacitors up against the oscillator pins",
     "A4": "read every pin against the maker's datasheet AND the footprint's pad numbering "
           "(top vs bottom view; a connector from its MATING face), then cite document and "
           "page in quality.pinouts -- by ref, value or footprint",
@@ -645,6 +646,34 @@ def exposed_pads(ctx):
         ok = n >= int(ctx.q.get("ep_min_vias", 1))
         out.append((ref, ok, "%s: exposed pad on %s, %d via(s) in it%s"
                     % (ref, net, n, "" if ok else " -- no path to the plane or for heat")))
+    return out
+
+
+# ── A9: crystals sit beside the pins they drive ──────────────────────────────────────
+@rule("A9")
+def crystal_distance(ctx):
+    out = []
+    limit = float(ctx.q.get("crystal_mm", 10.0))
+    for ref in sorted(ctx.fps):
+        if _prefix(ref) not in ("Y", "X") or "rystal" not in ctx.fps[ref].GetFPIDAsString():
+            continue
+        for pad in ctx.fps[ref].Pads():
+            net = pad.GetNetname()
+            if not net or net in ctx.grounds or net in ctx.power:
+                continue
+            x, y = _xy(pad)
+            ics = [(math.hypot(_xy(p)[0] - x, _xy(p)[1] - y), "%s.%s" % (r, n))
+                   for r, n, p in ctx.by_net[net] if _prefix(r) == "U"]
+            if not ics:
+                # through a series resistor: one hop is enough to find the oscillator pin
+                continue
+            d, pin = min(ics)
+            ok = d <= limit
+            out.append(("%s.%s" % (ref, pad.GetNumber()), ok,
+                        "%s.%s to %s on %s: %.1f mm%s"
+                        % (ref, pad.GetNumber(), pin, net, d,
+                           "" if ok else " (limit %.0f) -- a long crystal trace is stray "
+                                         "capacitance and an antenna" % limit)))
     return out
 
 

@@ -100,6 +100,9 @@ between it and the nearest charge lasts. The capacitor is that charge; a capacit
 far side of the board is a capacitor on a different rail. Power entering or leaving the
 board arrives down a cable, which is the worst inductance in the system.
 
+**Fix.** Beside the pin, on the pin's own layer, with the capacitor's ground via right
+at its pad: the loop through the via is part of the distance.
+
 **How it is checked.** Pad-centre to capacitor-pad distance, capacitors counted only if
 their other pad is on a ground net. An IC is judged pin by pin, a connector once per net.
 It checks **presence and distance, not value** — values and ratings are **M4**. A big
@@ -186,6 +189,17 @@ datasheet asks for are **M25**.
 
 **How it is checked.** The largest SMD pad of any footprint named `…-1EP…`, its net, and
 the vias on that net inside it.
+
+### A9 — Crystals sit beside the pins they drive
+
+**Rule.** Each crystal pad is within `crystal_mm` (10 mm) of the oscillator pin it
+connects to.
+
+**Why.** Placement by looks puts the crystal where it is tidy. The trace is then stray
+load capacitance (the frequency is off), an antenna, and a pickup for whatever runs beside
+it; marginal oscillators fail to start. The load-capacitor arithmetic is **M24**.
+
+**How it is checked.** Pad-to-pin distance on each crystal net that reaches an IC directly.
 
 ---
 
@@ -296,15 +310,17 @@ from published guidance: where a part's own datasheet says otherwise, the datash
   drives a cable, a filter capacitor or an ADC's sampling capacitor has a series
   isolation resistor.
 - **M23 — USB is complete.** The ESD clamp is at the connector, before anything else. The
-  pair has few vias and no stubs (a through-hole receptacle entered so its pin is not
-  one). The D+ pull-up and any series resistors are fitted or internal, as the PHY's
+  pair has few vias (at most four per line for USB 2.0, the same number on each half,
+  a ground via beside each layer change) and no stubs (a through-hole receptacle entered
+  so its pin is not one). The D+ pull-up and any series resistors are fitted or internal, as the PHY's
   datasheet says. The clock meets USB's accuracy (±0.25 % full speed; far tighter for high
   speed). VBUS is not fed backwards from a self-powered board.
 - **M24 — Crystals have the load capacitors their CL requires.** C1 = C2 = 2 × (CL −
   Cstray), Cstray 2–5 pF; the oscillator's drive/gain margin covers the crystal's ESR (the
   MCU maker's oscillator note has the test). Traces are short and symmetric, with nothing
   routed under or beside them and ground around.
-- **M25 — Thermal pads carry the heat they must.** Each exposed pad has the via count and
+- **M25 — Thermal pads carry the heat they must.** Each exposed pad is on the net the
+  datasheet names (not always ground) and has the via count and
   size the datasheet asks for, solid (not thermal-relief) connection, and paste in a
   windowpane (roughly 50–80 % coverage) rather than one full opening. Each regulator's and
   driver's junction temperature at full load is computed and under its limit.
@@ -340,6 +356,32 @@ from published guidance: where a part's own datasheet says otherwise, the datash
   current and wire gauge suit the circuit; the housing's pin 1 is where the footprint's
   pad 1 is, checked against the maker's drawing from the correct face. Print the board
   1:1 and offer the real connector to it before ordering.
+- **M33 — Every rail has a power budget.** Worst-case current of every load on each
+  rail, added up, is inside the regulator's rating with margin (50 % on a first board),
+  and those are the amps declared in `power_paths`. Connectors and cables on the rail are
+  inside their contact rating at that current.
+- **M34 — Levels and polarities are right at both ends.** Each signal's high and low are
+  valid for the pin that receives it. Every enable, reset, chip-select and interrupt is
+  the polarity the receiving part wants (active-high vs active-low read in BOTH
+  datasheets). Each differential pair's P goes to P. Every open-drain output has a
+  pull-up. Each op-amp's feedback returns to the inverting input. An auto-direction level
+  shifter does not face a pull-up or pull-down it cannot overdrive.
+- **M35 — The errata have been read.** Each MCU, PHY, codec and regulator with a published
+  errata sheet has had it read against the pins and peripherals this board uses.
+- **M36 — Power leaving the board is limited.** Any supply the board offers to a cable or
+  a socket (a USB port, a sensor feed, a rail to another board) has a current limit or
+  fuse, so a short at the far end does not take the board's own rail down or burn the
+  cable.
+- **M37 — The files sent are the board that was checked.** Zones were refilled and DRC
+  re-run immediately before export; gerbers and drill were exported together, from that
+  state; the package was opened in an independent gerber viewer and looked at, layer by
+  layer, with the drills over the copper. Stack-up, finish and any controlled impedance
+  are stated on the order.
+- **M38 — Nothing is stressed, and everything can be reached.** Ceramic capacitors are
+  clear of break-off tabs, V-scores and screw heads, and lie parallel to the nearest edge
+  that will flex. Every pluggable connector has room for its plug AND the fingers or tool
+  that mate it; test points have room for a probe. Each mounting hole is deliberately
+  grounded or deliberately isolated. Indicators and controls face the side a person sees.
 
 ---
 
@@ -372,4 +414,5 @@ Never renumber a rule: boards sign and waive by id.
 | 2026-10-01 | an optical sensor board | an analog rail read "0 unconnected" with its regulator on one island and every load on another, joined by 62 mm of 0.127 mm repair track | A1 |
 | 2026-10-02 | a ribbon between two of our own boards | the two ends were designed with different connectors and different pin orders | M1 |
 | 2026-10-04 | (survey of published design-review checklists and first-board post-mortems) | the faults reviewers report most: regulator layout and stability, converter grounding, USB-C CC resistors, I2C pull-ups, crystal load capacitors, loaded strap pins, mistyped net labels, same-package pin-order variants, swapped TX/RX, fab-capability and assembly-tier surprises | A5, A6, A7, A8, M13–M32 |
+| 2026-10-04 | (second survey: a widely used open review checklist, a first-board mistakes guide, vendor notes read in full) | power budget per rail, level and polarity of every control signal, errata, current-limited outputs, exporting stale files, board-edge stress on ceramics, crystals placed far from the MCU. Numbers confirmed at source: I2C rise-time bound and 3 mA / 0.4 V sink; USB 2.0 four vias per line and equal count per half; regulator feedback routed away from the inductor | A9, M33–M38 |
 | 2026-10-04 | (design review, before first order) | four classes of fault named as the ones to stop before a board is ordered: supply choke points, missing surge capacitance, unmatched high-speed traces, mirrored pinouts | A1, A2, A3, A4, M3, M4, M6 |
