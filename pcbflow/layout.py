@@ -182,6 +182,19 @@ PTH_RING = {2: 0.18, 4: 0.15}       # by copper layers; more than four uses the 
 PTH_RING_MARGIN = 0.02
 
 
+def _legible_fields(fp):
+    """A footprint's own visible silk text (its designator, usually) at no less than the
+    fab's legible minimum: 1.0 mm high, 0.15 stroke (quality A12). Library and local
+    footprints carry whatever their author liked -- 0.8 x 0.12 is common."""
+    for f in fp.GetFields():
+        if f.IsVisible() and f.GetLayer() in (pcbnew.F_SilkS, pcbnew.B_SilkS):
+            h, t = pcbnew.ToMM(f.GetTextHeight()), pcbnew.ToMM(f.GetTextThickness())
+            if h < 0.999:
+                f.SetTextSize(pcbnew.VECTOR2I(pcbnew.FromMM(1.0), pcbnew.FromMM(1.0)))
+            if t < 0.149:
+                f.SetTextThickness(pcbnew.FromMM(0.15))
+
+
 def _grow_thin_rings(fp, layers, notes):
     want = notes.get("min_pth_ring")
     if want is None:
@@ -4142,6 +4155,7 @@ def build(stem):
             continue
         fp = _load_footprint(fp_spec)
         _grown = _grow_thin_rings(fp, int(notes.get("layers", 2)), notes)
+        _legible_fields(fp)
         if _grown:
             print("  %s: %d plated pad(s) grown to the fab's minimum annular ring" % (ref, _grown))
         # LAND RESIZE: [(ref regex, x or None, y or None)] -- a stock footprint with its pads
