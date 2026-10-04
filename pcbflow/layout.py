@@ -178,7 +178,8 @@ def _place_ref(fp, target):
     between the parts are the only place it can be READ once the board is
     populated, so the board module names them."""
     ref = fp.Reference()
-    ref.SetTextSize(pcbnew.VECTOR2I(pcbnew.FromMM(0.8), pcbnew.FromMM(0.8)))
+    # 1.0 x 0.15: the fab's stated minimum height and stroke for legible silk (quality A12)
+    ref.SetTextSize(pcbnew.VECTOR2I(pcbnew.FromMM(1.0), pcbnew.FromMM(1.0)))
     ref.SetTextThickness(pcbnew.FromMM(0.15))
     ref.SetPosition(target)
     ref.SetTextAngleDegrees(0.0)      # upright regardless of how the part turned
