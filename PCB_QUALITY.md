@@ -383,9 +383,13 @@ filled in to match.
 does not, and a board outside the table comes back as an engineering query or a scrap
 panel. If the order really is on a finer process, state that process's numbers in
 `quality.fab`; that is a declaration, not a waiver. **Soft:** silk height and stroke.
-*Break it when* the fab's own page for the service being ordered gives a smaller figure
-(put it in `quality.fab`). *Do not break it* because a label would not fit at the legible
-size: an illegible label is no label — drop it or move it.
+*Break it when:* (a) the fab's own page for the service being ordered gives a smaller
+figure (put it in `quality.fab`); (b) the label has no site at the legible size anywhere
+in reach and the choice is a small label or none — `kicad_silk` then places it at 0.8 mm
+and says so; waive naming those labels, and only if what they say is not needed to
+assemble or wire the board correctly (a board name, a test-pad name). *Do not break it*
+for a polarity mark, a pin-1 mark, or the only statement of a connector's pin order: if
+that does not fit at the legible size, make room.
 
 ---
 
