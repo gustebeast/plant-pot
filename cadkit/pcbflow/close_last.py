@@ -228,6 +228,12 @@ def main(stem):
                     pcbnew.ToMM(min(q.GetSize().x, q.GetSize().y)) / 2.0)
                    for f in board.GetFootprints() for q in f.Pads()
                    if q.GetNetname() == net and q.GetDrillSize().x > 0]
+        # ...and the same for a via the net already has (motor_ctrl PG_5V, 2026-10-04): a
+        # search started FROM an escape via on one layer and changing to another beside it
+        # dropped its own via 0.02 mm from the first -- two holes 0.28 mm into each other.
+        barrels += [(pcbnew.ToMM(t.GetPosition().x), pcbnew.ToMM(t.GetPosition().y),
+                     RS.VIA_D) for t in board.GetTracks()
+                    if t.GetClass() == "PCB_VIA" and t.GetNetname() == net]
         vias = [(vx, vy) for vx, vy in vias
                 if not any((vx - bx) ** 2 + (vy - by) ** 2 <= br * br
                            for bx, by, br in barrels)]
