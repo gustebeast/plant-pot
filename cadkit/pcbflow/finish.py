@@ -134,6 +134,21 @@ def _drc(stem):
     return len(d.get("unconnected_items", [])), sorted(nets), len(bad)
 
 
+def _violation_nets(stem):
+    """The nets named in the error-level violations of the last DRC run on `stem`."""
+    try:
+        d = json.load(open(stem + ".finish.drc.json", encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    out = set()
+    for v in d.get("violations", []):
+        if v.get("severity") == "warning":
+            continue
+        for item in v.get("items", []):
+            out.update(re.findall(r"\[([^\]]+)\]", item.get("description", "")))
+    return out
+
+
 def _run(script, stem):
     """Run a pipeline step, streaming its output as it arrives.
 
@@ -342,20 +357,34 @@ def finish(stem, rounds=1, keep_route=False):
     if best_n and not best_v:
         shutil.copy(stem + ".kicad_pcb", stem + ".preclose.kicad_pcb")
         shutil.copy(stem + ".finish.drc.json", stem + ".preclose.drc.json")
-        try:
-            _run("close_last.py", stem)
-            _run("repair_planes.py", stem)
-            _n3, _nets3, _v3 = _drc(stem)
-            print("  close_last: %d unconnected, %d violation(s)" % (_n3, _v3))
-        except SystemExit as exc:
-            print("  close_last did not run (%s)" % (exc,))
-            _n3, _v3 = best_n, best_v + 1
-        if (_v3, _n3) < (best_v, best_n):
-            best_n, best_v, nets = _n3, _v3, _nets3
-        else:
+        # ⚠ ONE BAD CLOSURE DOES NOT COST THE GOOD ONES (optical, 2026-10-05). The search
+        # closed five nets cleanly and a sixth through a keep-out; judged as one lot, all
+        # six were put back and the board stayed at six open. So a failed attempt names
+        # the nets its new violations are on, and the next attempt leaves those alone --
+        # up to four times, each from the same untouched board.
+        _skip = set()
+        for _attempt in range(4):
+            os.environ["CLOSE_LAST_SKIP"] = ",".join(sorted(_skip))
+            try:
+                _run("close_last.py", stem)
+                _run("repair_planes.py", stem)
+                _n3, _nets3, _v3 = _drc(stem)
+                print("  close_last: %d unconnected, %d violation(s)" % (_n3, _v3))
+            except SystemExit as exc:
+                print("  close_last did not run (%s)" % (exc,))
+                _n3, _v3 = best_n, best_v + 1
+            if (_v3, _n3) < (best_v, best_n):
+                best_n, best_v, nets = _n3, _v3, _nets3
+                break
+            _blame = _violation_nets(stem) & set(nets) - _skip
             print("  close_last did not improve the board -- putting it back")
             shutil.copy(stem + ".preclose.kicad_pcb", stem + ".kicad_pcb")
             shutil.copy(stem + ".preclose.drc.json", stem + ".finish.drc.json")
+            if not _blame:
+                break
+            print("  ... and trying again without %s" % ", ".join(sorted(_blame)))
+            _skip |= _blame
+        os.environ.pop("CLOSE_LAST_SKIP", None)
         os.remove(stem + ".preclose.kicad_pcb")
         os.remove(stem + ".preclose.drc.json")
 
