@@ -151,6 +151,12 @@ def main(stem):
         (na, la, pa, ta), (nb, lb, pb, tb) = _ends(u["items"][0]), _ends(u["items"][1])
         if na and na == nb:
             todo.append((na, la, pa, ta, lb, pb, tb))
+    # nets finish.py asks to leave alone on this attempt: a closure of theirs broke a rule
+    # last time, and one bad closure must not cost the board the good ones (see finish.py)
+    skip = {s for s in os.environ.get("CLOSE_LAST_SKIP", "").split(",") if s}
+    if skip:
+        print("close_last: leaving %s open on this attempt" % ", ".join(sorted(skip)))
+        todo = [t for t in todo if t[0] not in skip]
     if not todo:
         print("close_last: nothing to close")
         return 0
