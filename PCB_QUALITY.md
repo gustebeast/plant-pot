@@ -366,7 +366,10 @@ pad-to-pad gap, silk text height and stroke. No via hole sits inside an SMD pad 
 order is for filled-and-capped vias (`quality.fab` `via_in_pad`).
 Excepted: an exposed pad (vias belong in it, **A8**), a pad with no paste (a test pad), and
 any land of 4 mm² or more — a 0.3 mm barrel through a 1.6 mm board holds about a quarter of
-the paste printed on 4 mm², and half of what a small crystal or 0603 pad gets.
+the paste printed on 4 mm², and half of what a small crystal or 0603 pad gets. A large land
+is exempt only for as many barrels as it can feed: the open vias in it, added up, may hold
+no more than a quarter of the paste printed on it (area × 0.12 mm). Two 0.4 mm vias in a
+1.3 × 4.5 connector land are over half of it — put the vias beside the land instead.
 
 **Why.** The numbers a board is routed to are typed into its rule file by someone, and
 DRC then proves the board against *those*. On the first boards this was run on, the rule
