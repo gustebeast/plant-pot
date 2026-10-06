@@ -231,6 +231,41 @@ def _legible_refs(stem):
             print(line)
 
 
+def _sync_values(stem):
+    """Write the netlist's part values into a board that is being kept.
+
+    ⚠ A KEPT BOARD KEPT ITS OLD VALUES (2026-10-05). A value is not copper, so swapping an
+    inductor for another on the same land passes _check_fresh and --keep-route is the
+    right tool -- and the board file went on naming the part that had been replaced, with
+    the quality pass green, because every check that reads a value read it from the
+    netlist or from this stale field alike. The board file is what the fab package is
+    built from. Run as a child, like _legible_refs."""
+    import layout
+    comps, _nets = layout.read_netlist(stem + ".net")
+    tmp = stem + ".values.json"
+    json.dump({r: v for r, (_fp, v) in comps.items()}, open(tmp, "w", encoding="utf-8"))
+    code = (
+        "import sys, json, pcbnew\n"
+        "want = json.load(open(sys.argv[2], encoding='utf-8'))\n"
+        "b = pcbnew.LoadBoard(sys.argv[1]); n = []\n"
+        "for fp in b.GetFootprints():\n"
+        "    v = want.get(fp.GetReference())\n"
+        "    if v is not None and fp.GetValue() != v:\n"
+        "        n.append('%s %s -> %s' % (fp.GetReference(), fp.GetValue(), v)); fp.SetValue(v)\n"
+        "if n:\n"
+        "    pcbnew.SaveBoard(sys.argv[1], b)\n"
+        "print('  value(s) brought into step with the netlist: %s' % (', '.join(n) or 'none'))\n"
+        "sys.stdout.flush()\n"
+        "import os; os._exit(0)\n")
+    proc = subprocess.run([PY, "-c", code, stem + ".kicad_pcb", tmp], stdin=subprocess.DEVNULL,
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    for line in proc.stdout.splitlines():
+        if "value(s)" in line:
+            print(line)
+    if os.path.isfile(tmp):
+        os.remove(tmp)
+
+
 def finish(stem, rounds=1, keep_route=False):
     """Route `stem`; with rounds>1, retry the nets the router could not finish.
 
@@ -280,6 +315,7 @@ def finish(stem, rounds=1, keep_route=False):
         # label size, a quality record -- on a board whose route was hard won. A change
         # to the netlist or a placement is NOT that: _check_fresh above refuses it.
         rounds = 1
+        _sync_values(stem)
         _legible_refs(stem)
     else:
         _run("layout.py", stem)
@@ -363,7 +399,14 @@ def finish(stem, rounds=1, keep_route=False):
         # the nets its new violations are on, and the next attempt leaves those alone --
         # up to four times, each from the same untouched board.
         _skip = set()
+        import time as _time
+        _close_t0 = _time.time()
         for _attempt in range(4):
+            # a retry is worth a few minutes, not another route's worth (see close_last)
+            if _attempt and _time.time() - _close_t0 > 1800:
+                print("  close_last: no further attempt, %.0f min spent"
+                      % ((_time.time() - _close_t0) / 60))
+                break
             os.environ["CLOSE_LAST_SKIP"] = ",".join(sorted(_skip))
             try:
                 _run("close_last.py", stem)
