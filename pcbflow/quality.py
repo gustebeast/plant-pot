@@ -93,6 +93,12 @@ HINT = {
            "an UNRATED pin is a reading nobody has done: put the number and the document "
            "it came from in quality.pin_volts. A clamped transient over a rating is judged "
            "on the clamp's own pulse -- PCB_QUALITY.md A16, 'Steady and transient'",
+    "A18": "cadkit/pcbflow/silkfit.py moves every silk FIELD clear automatically, so a "
+           "failure here is something it cannot move: a footprint OUTLINE or a board "
+           "drawing over a pad. Put that footprint's prefix in the board's `strip_silk` "
+           "note, which relocates its graphics to .Fab. There is no declaration for this "
+           "rule and there should not be -- ink over a mask opening is not printed, so "
+           "signing for it would be signing that the plot may lie",
     "A17": "cadkit/kicad_silk.py prints all three (a word a way, else a pinout block and "
            "a way-1 mark): give it room -- `silk_short` words, a wider board edge, a part "
            "moved off the connector's own side. A pinout that can only go on the other "
@@ -121,6 +127,7 @@ HARD = {
     "A13": ("",),
     "A17": ("nothing on its own side says which contact is way",
             "but gives no reason", "stale declaration"),
+    "A18": ("will be clipped",),
     "A16": ("steady-state worst case", "can make NO CLAIM",
             "no worst-case voltage is declared", "NO voltage rating is declared",
             "states no `max`", "with no `src`", "gives no `why`"),
@@ -456,6 +463,66 @@ def _rail_volts(net):
     return 5.0 if net.upper().startswith("VBUS") else None
 
 
+def _pour_narrowest(b, net, layer):
+    """(mm, x, y) of the narrowest axis-aligned cut through this net's fill on `layer`.
+
+    Sums the covered span along each scanline rather than taking the outer extent, so a
+    pour in two lobes with a gap between them reports the copper it HAS and not the
+    distance across the hole. Returns None when the net has no filled polygon there.
+    """
+    import pcbnew
+    lid = b.GetLayerID(layer) if isinstance(layer, str) else layer
+    if lid is None or lid < 0:
+        return None
+    polys = []
+    for z in b.Zones():
+        if z.GetIsRuleArea() or (z.GetNetname() or "") != net or not z.IsOnLayer(lid):
+            continue
+        try:
+            polys.append(z.GetFilledPolysList(lid))
+        except Exception:                      # noqa: BLE001 -- shape API varies
+            continue
+    segs = []
+    for poly in polys:
+        for o in range(poly.OutlineCount()):
+            ol = poly.Outline(o)
+            n = ol.PointCount()
+            for i in range(n):
+                p, q = ol.CPoint(i), ol.CPoint((i + 1) % n)
+                segs.append((p.x, p.y, q.x, q.y))
+    if not segs:
+        return None
+    xs = [v for s4 in segs for v in (s4[0], s4[2])]
+    ys = [v for s4 in segs for v in (s4[1], s4[3])]
+    best = None
+    STEPS = 400
+    for axis in (0, 1):
+        lo, hi = (min(ys), max(ys)) if axis == 0 else (min(xs), max(xs))
+        if hi <= lo:
+            continue
+        for k in range(1, STEPS):
+            t = lo + (hi - lo) * k / float(STEPS)
+            hits = []
+            for (ax, ay, bx, by) in segs:
+                u, v = (ay, by) if axis == 0 else (ax, bx)
+                if (u - t) * (v - t) >= 0:
+                    continue                   # no crossing (ties skipped: a vertex)
+                f = (t - u) / float(v - u)
+                hits.append((ax + (bx - ax) * f) if axis == 0 else (ay + (by - ay) * f))
+            if len(hits) < 2:
+                continue
+            hits.sort()
+            span = sum(hits[i + 1] - hits[i] for i in range(0, len(hits) - 1, 2))
+            if span <= 0:
+                continue
+            if best is None or span < best[0]:
+                mid = (hits[0] + hits[1]) / 2.0
+                best = (span, mid if axis == 0 else t, t if axis == 0 else mid)
+    if best is None:
+        return None
+    return MM(best[0]), MM(best[1]), MM(best[2])
+
+
 @rule("A1")
 def power_paths(ctx):
     out = []
@@ -492,7 +559,42 @@ def power_paths(ctx):
                     continue
                 w, kind, layer, at = r
                 if kind in ("pour", "pad") or w >= _Net.POUR:
-                    out.append((subject, True, "%.2f A through a pour the whole way" % amps))
+                    # ⚠ A POUR USED TO END THE CHECK HERE, AND THAT EMPTIED THIS RULE
+                    # ON EXACTLY THE PATHS IT EXISTS FOR. A pour edge is built with
+                    # width POUR (1e3 mm) and zero ohms, so "widest" returns it and the
+                    # IPC width test below was skipped. On the board that found this, 12
+                    # of A1's 20 rows said "through a pour the whole way" -- INCLUDING
+                    # ALL ELEVEN 7.5 A ROWS. The rule is titled "supply paths carry
+                    # their current, with no choke point" and it had measured no
+                    # cross-section on any path the board exists to carry. A pour can be
+                    # one island, fill perfectly, satisfy every connectivity check, and
+                    # still neck to half a millimetre between two lobes.
+                    #
+                    # ⚠ WHAT IS MEASURED IS AN UPPER BOUND, AND THE ASYMMETRY IS THE
+                    # POINT. Scanning axis-aligned cuts finds the narrowest HORIZONTAL or
+                    # VERTICAL section; a neck lying on a diagonal is narrower than any
+                    # of them. So passing this is a NECESSARY condition and not a
+                    # sufficient one, while failing it is proof. That is still infinitely
+                    # more than the previous answer, and the text says which it is rather
+                    # than letting a reader take it for a minimum.
+                    need = required_width_mm(amps, layer, ctx.q)
+                    cut = _pour_narrowest(ctx.board, net, layer)
+                    if cut is None:
+                        out.append((subject, None,
+                                    "%.2f A through a pour, and no filled polygon for %s "
+                                    "on %s could be read: NO claim is made about its "
+                                    "cross-section" % (amps, net, layer)))
+                        continue
+                    cw, cx, cy = cut
+                    ok = cw + 1e-6 >= need
+                    out.append((subject, ok,
+                                "%.2f A through a pour; its narrowest axis-aligned cut is "
+                                "%.2f mm at (%.2f, %.2f) and IPC-2221 asks %.2f mm%s. A "
+                                "diagonal neck can be tighter than any axis-aligned one, "
+                                "so this bounds the pour from ABOVE: failing is proof, "
+                                "passing is a necessary condition"
+                                % (amps, cw, cx, cy, need,
+                                   "" if ok else " -- UNDER by %.2f mm" % (need - cw))))
                     continue
                 need = (required_width_mm(amps, layer, ctx.q) if kind == "track"
                         else required_width_mm(amps, "F.Cu", ctx.q))
@@ -1453,7 +1555,7 @@ def return_path_slots(ctx):
     is the area between the two."""
     b = ctx.board
     limit = float(ctx.q.get("return_slot", RETURN_SLOT))
-    allowed = set(ctx.q.get("return_slot_ok", {}) or {})
+    allowed = dict(ctx.q.get("return_slot_ok", {}) or {})
     step = 0.25                       # mm between samples along a track
 
     # the ground copper, by the layer it is on
@@ -1482,7 +1584,46 @@ def return_path_slots(ctx):
     # copper layers in stack-up order, front to back
     order = {l: k for k, l in enumerate(b.GetEnabledLayers().CuStack())}
 
-    gaps, checked = [], 0
+    # ⚠ THIS SAMPLES THE CHAINED POLYLINE, AND SAMPLING SEGMENTS WAS A REAL MISS.
+    # KiCad splits a track at every vertex, so a run that leaves the plane, turns a
+    # corner, and comes back is two segments -- and the old code tested each one on its
+    # own and required plane on both sides WITHIN that segment. A crossing whose far
+    # bank lay past a corner was therefore counted by NEITHER segment. On the board
+    # that found this, JOY_FILT -- the joystick ADC input -- straddled 9.04 mm of slot
+    # against a 5.00 mm limit and A15 reported its widest crossing as 4.56 mm and
+    # passed. The two short jogs either side of the corner were also under the 1.0 mm
+    # floor below, so they were skipped outright.
+    #
+    # The floor now applies to the CHAIN, not to each segment: a 0.4 mm jog inside a
+    # 30 mm run is part of that run, and dropping it was how 29 mm of copper on that
+    # board went unsampled.
+    def _chains(segs):
+        """Connected polylines, as point lists. Splits at a junction of three or more,
+        where there is no single way to continue."""
+        ends = {}
+        for k, t in enumerate(segs):
+            for p in (t.GetStart(), t.GetEnd()):
+                ends.setdefault((p.x, p.y), []).append(k)
+        used, out = set(), []
+        for k, t in enumerate(segs):
+            if k in used:
+                continue
+            used.add(k)
+            pts = [t.GetStart(), t.GetEnd()]
+            for head in (0, 1):
+                while True:
+                    tip = pts[0] if head == 0 else pts[-1]
+                    nxt = [j for j in ends.get((tip.x, tip.y), []) if j not in used]
+                    if len(nxt) != 1 or len(ends.get((tip.x, tip.y), [])) > 2:
+                        break
+                    used.add(nxt[0])
+                    a2, e2 = segs[nxt[0]].GetStart(), segs[nxt[0]].GetEnd()
+                    far = e2 if (a2.x, a2.y) == (tip.x, tip.y) else a2
+                    pts.insert(0, far) if head == 0 else pts.append(far)
+            out.append(pts)
+        return out
+
+    bychain = {}
     for t in b.GetTracks():
         if t.GetClass() == "PCB_VIA":
             continue
@@ -1498,42 +1639,87 @@ def return_path_slots(ctx):
         # return is in whichever is there.
         if lid not in order:
             continue
+        bychain.setdefault((net, lid), []).append(t)
+
+    gaps, checked = [], 0
+    for (net, lid), segs in bychain.items():
         dist = {l: abs(order[l] - order[lid]) for l in planes if l != lid and l in order}
         if not dist:
             continue
         near = min(dist.values())
         others = [l for l in dist if dist[l] == near]
-        ln = MM(t.GetLength())
-        if ln < 1.0:
-            continue
-        checked += 1
-        a, e = t.GetStart(), t.GetEnd()
-        n = max(2, int(ln / step))
-        if True:
-            cov = []
-            for i in range(n + 1):
-                f = i / float(n)
-                pt = pcbnew.VECTOR2I(int(a.x + (e.x - a.x) * f), int(a.y + (e.y - a.y) * f))
+        for pts in _chains(segs):
+            seglen = [math.hypot(pts[k + 1].x - pts[k].x, pts[k + 1].y - pts[k].y)
+                      for k in range(len(pts) - 1)]
+            total = MM(sum(seglen))
+            if total < 1.0:
+                continue
+            checked += 1
+            # one sample list for the WHOLE polyline, at the same 0.25 mm step
+            samp, cov = [], []
+            for k in range(len(pts) - 1):
+                a, e = pts[k], pts[k + 1]
+                n = max(1, int(MM(seglen[k]) / step))
+                for i in range(n if k < len(pts) - 2 else n + 1):
+                    f = i / float(n)
+                    samp.append(pcbnew.VECTOR2I(int(a.x + (e.x - a.x) * f),
+                                                int(a.y + (e.y - a.y) * f)))
+            for pt in samp:
                 cov.append(any(covered(lid2, pt) for lid2 in others))
+            m = len(cov) - 1
+            d = total / float(m) if m else 0.0
             i = 0
-            while i <= n:
+            while i <= m:
                 if cov[i]:
                     i += 1
                     continue
                 j = i
-                while j <= n and not cov[j]:
+                while j <= m and not cov[j]:
                     j += 1
                 # STRADDLED only: plane on BOTH sides. A track running off the edge of
                 # the pour is a different thing, and is not what this rule is about.
-                if i > 0 and j <= n:
-                    f = (i + j) / 2.0 / n
-                    gaps.append(((j - i) * ln / n, net,
-                                 MM(a.x + (e.x - a.x) * f), MM(a.y + (e.y - a.y) * f)))
+                if i > 0 and j <= m:
+                    mid = samp[(i + j) // 2]
+                    gaps.append(((j - i) * d, net, MM(mid.x), MM(mid.y)))
                 i = j + 1
 
     if not checked:
         return [("plane", None, "no signal track runs over a ground pour on another layer")]
-    gaps = [g for g in gaps if g[1] not in allowed]
+    # ⚠ AN EXEMPTION CARRIES A NUMBER NOW, AND A BARE NET NAME IS REFUSED. This
+    # used to be a set of net names and nothing else, which made it unbounded: a net
+    # listed to excuse a measured 7.17 mm crossing would have gone on excusing the same
+    # net at 30 mm, silently, forever. It is now {net: {"mm": <the measured figure it
+    # was signed for>, "why": ...}}, a crossing is forgiven only up to that figure, and
+    # anything over it is graded like any other net's.
+    #
+    # ⚠ AND A DECLARATION THAT NO LONGER MATCHES ANYTHING IS A FAILURE, not a
+    # harmless leftover -- the same rule A13 applies to quality.unconnected. The
+    # exemption that prompted this had been written for a crossing that a later re-route
+    # removed: it covered nothing, nothing said so, and because the filter stripped the
+    # net BEFORE anything was reported, no run could ever have shown that the number had
+    # moved. An exemption for a slot that is gone is a licence nobody is using and the
+    # next re-route might.
+    stale = []
+    for _net, _d in sorted(allowed.items()):
+        if not isinstance(_d, dict) or "mm" not in _d or not str(_d.get("why", "")).strip():
+            out_bad = ("return slot", False,
+                       "quality.return_slot_ok[%r] must give both `mm` -- the measured "
+                       "crossing it is signed for -- and `why`" % _net)
+            return [out_bad]
+        if not any(g[1] == _net for g in gaps):
+            stale.append(_net)
+    kept = []
+    for g in gaps:
+        d = allowed.get(g[1])
+        if d is not None and g[0] <= float(d["mm"]) + 1e-6:
+            continue                   # forgiven, and only up to the figure signed for
+        kept.append(g)
+    gaps = kept
+    if stale:
+        return [("return slot", False,
+                 "quality.return_slot_ok names %s, which straddles nothing on this "
+                 "board: a stale exemption is a licence nobody is using and the next "
+                 "re-route might" % ", ".join(stale))]
     bad = sorted((g for g in gaps if g[0] > limit + 1e-6), reverse=True)
     if bad:
         g = bad[0]
@@ -1918,6 +2104,68 @@ def _silk_ink(ctx):
 def _box_gap(a, b):
     """Clear distance between two boxes (x0, y0, x1, y1); 0 where they touch or overlap."""
     return math.hypot(max(a[0] - b[2], 0.0, b[0] - a[2]), max(a[1] - b[3], 0.0, b[1] - a[3]))
+
+
+@rule("A18")
+def silk_prints_as_drawn(ctx):
+    """Nothing is drawn on the silkscreen that the solder mask will clip away.
+
+    ⚠ THE RULE IS THE OWNER'S AND IT IS ABOUT HONESTY, NOT TIDINESS: the design
+    must not show a letter that is missing on the real board. A fab prints silk and
+    then opens the mask, and ink over an opening is removed -- so a designator half
+    over a neighbour's pad is drawn in full in every render, plot and review, and
+    arrives with a letter gone.
+
+    ⚠ WHY NOTHING CAUGHT IT FOR SO LONG, which is the part worth keeping. A12 had
+    measured silk for HEIGHT and STROKE since the beginning and said nothing about
+    position, and the one position claim anybody made -- 'the fitter holds 0.20 mm to
+    any mask opening' -- was TRUE of the objects the fitter places and silent about
+    the rest. A footprint's reference designator arrives with the land, from whoever
+    drew it, and went onto the board untouched. One class of silk was fitted, another
+    was not, and a sign-off read the first and asserted the board. The same shape as
+    A1 waving a pour through and A15 reading one segment at a time.
+
+    THERE IS NO DECLARATION FOR THIS RULE, deliberately. Every other hard rule here
+    can be signed for with a measurement and a reason, because every other one is a
+    judgement about whether something is good enough. This one is not: ink over an
+    opening is not printed, full stop, so a declaration would be signing that the
+    plot may lie about what arrives. The escape is to move the object to .Fab -- the
+    assembly drawing, which is where something nobody can see once the board is
+    populated belongs -- and silkfit does that automatically for anything it cannot
+    place. `strip_silk` does it for footprint graphics.
+    """
+    try:
+        # by path, not relatively: quality.py runs as a script too (see layout.py)
+        _here = os.path.dirname(os.path.abspath(__file__))
+        if _here not in sys.path:
+            sys.path.insert(0, _here)
+        import silkfit
+    except Exception as e:                                  # noqa: BLE001
+        return [("silk clipped", None,
+                 "silkfit is not importable (%s), so NO claim is made about whether "
+                 "this board's silk prints as drawn" % type(e).__name__)]
+    try:
+        bad = silkfit.clipped(ctx.board, pcbnew=pcbnew)
+    except Exception as e:                                  # noqa: BLE001
+        return [("silk clipped", None,
+                 "the check itself failed: %s: %s" % (type(e).__name__, e))]
+    n_silk = 0
+    for fp in ctx.fps.values():
+        for f in fp.GetFields():
+            if f.IsVisible() and f.GetLayer() in (pcbnew.F_SilkS, pcbnew.B_SilkS):
+                n_silk += 1
+        for g in fp.GraphicalItems():
+            if g.GetLayer() in (pcbnew.F_SilkS, pcbnew.B_SilkS):
+                n_silk += 1
+    if not bad:
+        return [("silk clipped", True,
+                 "every one of the %d silk object(s) on this board prints as drawn: "
+                 "none overlaps a solder-mask opening" % n_silk)]
+    worst = bad[0]
+    return [("silk clipped", False,
+             "%d of %d silk object(s) will be clipped by the solder mask and so are "
+             "drawn but not printed; the worst is %s, losing %.4f mm2 at (%.2f, %.2f)"
+             % (len(bad), n_silk, worst[0], worst[1], worst[2][0], worst[2][1]))]
 
 
 @rule("A17")
