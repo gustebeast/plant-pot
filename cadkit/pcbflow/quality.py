@@ -99,6 +99,14 @@ HINT = {
            "note, which relocates its graphics to .Fab. There is no declaration for this "
            "rule and there should not be -- ink over a mask opening is not printed, so "
            "signing for it would be signing that the plot may lie",
+    "A19": "look at the character DRAWN in the face (render the font file, not the "
+           "board). If it is the character, add it to the face's `glyphs` and re-run the "
+           "labeller; if it is an ornament, redraw it in the font file or reword the "
+           "label (silk_labels). A missing record means the labeller has not run since "
+           "the font was applied: run finish again",
+    "A20": "re-run the labeller (finish --keep-route): kicad_silk no longer lays a block "
+           "there. If the board was lettered by hand, turn the block so its lines step "
+           "away from the pad row, or move it more than 3 mm off",
     "A17": "cadkit/kicad_silk.py prints all three (a word a way, else a pinout block and "
            "a way-1 mark): give it room -- `silk_short` words, a wider board edge, a part "
            "moved off the connector's own side. A pinout that can only go on the other "
@@ -128,6 +136,8 @@ HARD = {
     "A17": ("nothing on its own side says which contact is way",
             "but gives no reason", "stale declaration"),
     "A18": ("will be clipped",),
+    "A19": ("",),
+    "A20": ("",),
     "A16": ("steady-state worst case", "can make NO CLAIM",
             "no worst-case voltage is declared", "NO voltage rating is declared",
             "states no `max`", "with no `src`", "gives no `why`"),
@@ -2168,6 +2178,96 @@ def silk_prints_as_drawn(ctx):
              % (len(bad), n_silk, worst[0], worst[1], worst[2][0], worst[2][1]))]
 
 
+def _labeller():
+    """cadkit/kicad_silk.py, by path: quality.py runs as a script too (see layout.py)."""
+    up = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if up not in sys.path:
+        sys.path.insert(0, up)
+    import kicad_silk
+    return kicad_silk
+
+
+@rule("A19")
+def silk_says_what_it_spells(ctx):
+    """Every character printed in an outline font is one somebody has looked at, drawn.
+
+    ⚠ THE TEXT OBJECT IS NOT THE INK. A display face draws ornaments on ordinary code
+    points, and the board, the netlist, the plot's own text and every rule here go on
+    saying "+5V" while the fab prints "TH5V" -- found by a person reading a gerber,
+    after five boards had passed. Nothing scripted can read a glyph, so the rule is
+    about the RECORD: the labeller writes down the family it lettered in and the
+    characters verified in it (`<board>.silk.json`, from the face's `glyphs`), and this
+    holds every printed text to that list. No declaration: an unverified character is
+    looked at and listed, or redrawn, or the label is reworded.
+    """
+    faced = []
+    texts = [d for d in ctx.board.GetDrawings() if d.GetClass() == "PCB_TEXT"]
+    texts += [f for fp in ctx.fps.values() for f in fp.GetFields() if f.IsVisible()]
+    for t in texts:
+        if t.GetLayer() in (pcbnew.F_SilkS, pcbnew.B_SilkS) and t.GetFontName():
+            faced.append(t)
+    if not faced:
+        return [("silk glyphs", True,
+                 "every silk text is in KiCad's stroke font, which draws each character "
+                 "as itself")]
+    try:
+        with open(ctx.stem + ".silk.json", encoding="utf-8") as fh:
+            rec = json.load(fh)
+    except (OSError, ValueError):
+        rec = {}
+    fams = sorted({t.GetFontName() for t in faced})
+    if not rec.get("glyphs") or fams != [rec.get("family")]:
+        return [("silk glyphs", False,
+                 "%d silk text(s) are in %s, and the labeller's record of the face it "
+                 "lettered in (%s.silk.json) %s -- so no character on this board is "
+                 "verified as drawn" % (len(faced), " / ".join(fams), ctx.name,
+                                        "names %r" % rec.get("family") if rec.get("glyphs")
+                                        else "lists no verified characters"))]
+    try:
+        bad = _labeller().unverified_glyphs(ctx.board, rec["glyphs"])
+    except Exception as e:                                  # noqa: BLE001
+        return [("silk glyphs", None, "the check itself failed: %s: %s"
+                 % (type(e).__name__, e))]
+    if bad:
+        return [("silk glyphs", False,
+                 "%d silk text(s) use a character not verified as drawn in %s: %s"
+                 % (len(bad), fams[0], ", ".join("%r in %r" % (c, s) for s, c in bad[:8])))]
+    return [("silk glyphs", True,
+             "all %d silk text(s) in %s use only the %d characters verified as drawn in it"
+             % (len(faced), fams[0], len(set(rec["glyphs"]))))]
+
+
+@rule("A20")
+def pinout_not_read_as_pin_labels(ctx):
+    """No pinout LIST lies along a row of connector pins, where each line is read as the
+    label of the pin it happens to sit beside.
+
+    ⚠ RIGHT AS A LIST, WRONG BY POSITION. A block headed "J7" with "1 GND / 2 24V / 3 SW"
+    is correct text. Turned so its lines step along the pad row, half a millimetre from
+    the tails, at a line pitch within a few percent of the connector's, "1 GND" sits
+    under the 24 V pin of a power connector -- and a person with a meter probe reads the
+    board by position. A17 saw a pinout on the connector's side and passed it. Within
+    3 mm of ANY connector's pads (its own or a neighbour's) a block's lines must step
+    AWAY from the row; a word per way, each on its own pin, is the registered form and
+    is not a block. No declaration: the labeller lays it elsewhere or not at all, and
+    then A17 says what is missing.
+    """
+    try:
+        bad = _labeller().misregistered(ctx.board)
+    except Exception as e:                                  # noqa: BLE001
+        return [("pinout position", None, "the check itself failed: %s: %s"
+                 % (type(e).__name__, e))]
+    if bad:
+        return [("pinout position", False,
+                 "%d pinout block(s) lie along a connector's pad row within 3 mm and "
+                 "will be read as labels for those pins: %s"
+                 % (len(bad), ", ".join("%s's list along %s" % (a, b) if a != b else
+                                        "%s's list along its own pins" % a
+                                        for a, b in bad)))]
+    return [("pinout position", True,
+             "no pinout block lies along a connector's pad row within 3 mm")]
+
+
 @rule("A17")
 def connector_labels(ctx):
     """Designator, a name for every way, and which contact is way 1 -- all three on the
@@ -2286,6 +2386,21 @@ def connector_labels(ctx):
                 marks.append(("dot", "", c))
         unnamed = sorted(set(ways) - set(worded))
         own_block, far_block = block(mine["texts"]), block(other["texts"])
+        if not far_block:
+            # ...or, on the other face of a through-hole row, a NUMBERED word at each
+            # tail ("2 24V" in line with tail 2): the pinout in the one form that is
+            # also right read by position (A20), and it counts as the pinout there
+            far = {}
+            for s, c, box in other["texts"]:
+                if "\n" in s or _box_gap(box, _body) > LABEL_REACH or probe_label(c):
+                    continue
+                k = min(ways, key=lambda n: math.dist(c, ways[n]))
+                m = re.match(r"^%d\s+(\S.*)$" % k, s.strip())
+                if m and _names_net(m.group(1), nets[(ref, k)],
+                                    [a.get(nets[(ref, k)]) for a in alias]):
+                    far[k] = (s, c)
+            if set(ways) <= set(far):
+                far_block = ("a numbered word at each tail", None)
         # what was found, for the fail harness (test_quality_a17.py) to break
         ctx.connector_ink[ref] = {"back": back, "words": dict(worded), "marks": marks,
                                   "own_block": own_block, "far_block": far_block,
