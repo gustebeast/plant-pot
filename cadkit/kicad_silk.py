@@ -135,7 +135,10 @@ REF_SKIP = ("TP", "H", "MH", "FID", "REF", "G", "LOGO")   # no part there to nam
 # ⚠ KICAD FALLS BACK SILENTLY. A family it cannot find (not installed for this user) is
 # drawn in a substitute face with no error and no warning, so _set_face proves the family
 # resolved before any label is placed, by drawing in it and in a name that cannot exist.
+# A missing family STOPS the run, unless the face says `"fallback": true`: then the board
+# is lettered in the stroke font at the stroke font's sizes, and the run says so loudly.
 FACE = None
+FACE_MISSING = None        # the family a `fallback` face asked for and KiCad did not have
 
 
 def _apply_face(t, board):
@@ -148,7 +151,7 @@ def _apply_face(t, board):
 
 def _set_face(face, board):
     """Take `face` for this run: the sizes, and proof that KiCad found the family."""
-    global FACE, SIZE_TP, SIZE_J, SIZE_SMALL, SIZE_REF, SIZES_ID
+    global FACE, FACE_MISSING, SIZE_TP, SIZE_J, SIZE_SMALL, SIZE_REF, SIZES_ID
     if not face:
         return
     size = float(face["size"])
@@ -162,6 +165,17 @@ def _set_face(face, board):
         t.ResolveFont(board.GetEmbeddedFonts())
         return t.GetBoundingBox().GetWidth()
     if width(face["family"]) == width("no such family \x7f%s" % face["family"]):
+        if face.get("fallback"):
+            # the project would rather have a board in KiCad's own stroke font than no
+            # board (someone who cloned it and cannot have the face). Said, never silent;
+            # FACE stays None, so every size above is the stroke font's own again.
+            FACE_MISSING = face["family"]
+            print("  !! kicad_silk: the font family %r is NOT INSTALLED for this user. "
+                  "Lettering this board in KiCad's stroke font instead (silk_font "
+                  "fallback): it is a correct board, but NOT the one the project orders "
+                  "-- labels sit and size differently. Install the family and re-run "
+                  "for the project's own silk." % face["family"])
+            return
         raise SystemExit("kicad_silk: the font family %r is not installed for this user -- "
                          "KiCad would draw a substitute face without saying so. Install "
                          "it (per-user is enough) and re-run" % face["family"])
@@ -170,11 +184,27 @@ def _set_face(face, board):
     SIZES_ID = tuple(z for z in SIZES_ID if z >= size) or (size,)
 
 
+def _outline(t):
+    return bool(t.GetFontName())          # the stroke font has no name
+
+
 def _face_refs(board):
     """The footprints' own designators, where they print, in the face and at its size."""
+    n = 0
+    if FACE_MISSING:
+        # a board lettered in the face on another machine still NAMES it on every
+        # designator, and KiCad would substitute for each one silently: back to stroke
+        for fp in board.GetFootprints():
+            for f in fp.GetFields():
+                if f.GetLayer() in (pcbnew.F_SilkS, pcbnew.B_SilkS) and _outline(f):
+                    f.SetFont(None)
+                    f.SetBold(False)
+                    f.SetTextSize(pcbnew.VECTOR2I(MM(SIZE_REF), MM(SIZE_REF)))
+                    f.SetTextThickness(MM(STROKE))
+                    n += 1
+        return n
     if not FACE:
         return 0
-    n = 0
     for fp in board.GetFootprints():
         for f in fp.GetFields():
             if f.IsVisible() and f.GetLayer() in (pcbnew.F_SilkS, pcbnew.B_SilkS):
