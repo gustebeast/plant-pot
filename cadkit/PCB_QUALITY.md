@@ -554,6 +554,23 @@ graded on that pin, and the `why` has to say what makes it inapplicable (the par
 clamp; the rating is an interruption rating, not a withstand rating; the pulse is shorter
 than anything the part responds to). That is a declaration, which prints, not a waiver.
 
+**A pin run over its rating on purpose.** The steady-state test is hard and takes no waiver,
+and a board must not get under it by writing the rating up or the net down: both make the
+declaration false. When a person decides to run a part over its maker's number, the pin's
+entry says so itself:
+
+```python
+"J21": {"max": 24.0, "src": "Xinyangze YZF0002 spec A.0: 24 V AC(rms)/DC",
+        "accepted": {"v": 24.72, "by": "user", "date": "2026-10-06",
+                     "why": "a nominal-24 V rating on a nominal-24 V supply at +3 %"}},
+```
+
+All four fields are required. The pin then passes only while the net's worst case is at or
+under `accepted.v` (so a later change to the rail re-opens it), every run prints the line
+with OVER ITS RATING in it, and the rule's summary counts the accepted pins. It answers the
+steady case only: the transient is still graded against the pin's own `peak`. `by` is the
+person who decided, never the session that typed it.
+
 **How a board declares it.**
 
 ```python

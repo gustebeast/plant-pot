@@ -1668,7 +1668,7 @@ def _pin_rating(ctx, pv, ref, num):
         if not m:
             return None
         v = float(m.group(1))
-        return (v, v, "the part's own BOM value %r" % value, "", "the value text")
+        return (v, v, "the part's own BOM value %r" % value, "", "the value text", None)
     spec = dict(ent) if isinstance(ent, dict) else {"max": ent}
     pins = spec.pop("pins", None) or {}
     pk = _match_key(list(pins), str(num))
@@ -1677,7 +1677,30 @@ def _pin_rating(ctx, pv, ref, num):
         spec.update(sub if isinstance(sub, dict) else {"max": sub})
         where += "[pins][%r]" % pk
     return (_vnum(spec.get("max")), _vnum(spec.get("peak", spec.get("max"))),
-            spec.get("src", ""), spec.get("why", ""), where)
+            spec.get("src", ""), spec.get("why", ""), where, spec.get("accepted"))
+
+
+ACCEPT_FIELDS = ("v", "by", "date", "why")
+
+
+def _accepted(acc, v):
+    """(ok, text) for an `accepted` entry on a pin over its steady rating. An acceptance
+    is a PERSON's decision to run a part over its maker's number, bounded to a stated
+    voltage: who, when, why, and up to how many volts. It is not a waiver -- the rule
+    stays hard, an entry missing a field or exceeded by the net fails exactly as before,
+    and every run prints it and counts it."""
+    if not isinstance(acc, dict):
+        return False, "its `accepted` is not a dict of %s" % ", ".join(ACCEPT_FIELDS)
+    miss = [k for k in ACCEPT_FIELDS if not str(acc.get(k, "")).strip()]
+    if miss:
+        return False, "its `accepted` entry lacks %s" % ", ".join(miss)
+    lim = _vnum(acc["v"])
+    if not isinstance(lim, float):
+        return False, "its `accepted` entry's `v` is not a number"
+    if v > lim:
+        return False, "it is accepted only up to %.4g V" % lim
+    return True, ("ACCEPTED up to %.4g V by %s on %s: %s"
+                  % (lim, acc["by"], acc["date"], acc["why"]))
 
 
 @rule("A16")
@@ -1697,7 +1720,7 @@ def pin_voltage_ratings(ctx):
                     "voltage and A16 can make NO CLAIM about the %d pin(s) on its %d "
                     "net(s). That is an unmade check, not a clean board"
                     % (ctx.name, npins, len(nets))))
-    priced = graded = rated = unratable = 0
+    priced = graded = rated = unratable = accepted = 0
     margins = []
     for net in nets:
         pads = sorted({(r, n) for r, n, _p in ctx.by_net[net]},
@@ -1739,7 +1762,7 @@ def pin_voltage_ratings(ctx):
                             % (sub, part, net, max(v, peak))))
                 continue
             graded += 1
-            mx, pkv, src, why, where = r
+            mx, pkv, src, why, where, acc = r
             if mx is None:
                 out.append((sub, False, "%s (%s): %s states no `max` for this pin"
                             % (sub, part, where)))
@@ -1763,11 +1786,30 @@ def pin_voltage_ratings(ctx):
                 continue
             rated += 1
             if v > mx:
+                # The acceptance answers the STEADY case and nothing else: the transient
+                # is still graded below against the pin's own `peak`, like any other pin's.
+                a_ok, a_txt = _accepted(acc, v) if acc is not None else (False, "")
+                if a_ok and pkv != "none" and peak > pkv:
+                    out.append((sub, False,
+                                "%s (%s) is rated %.4g V and the clamped transient on %s "
+                                "reaches %.4g V: %.4g V over, for as long as the clamp "
+                                "conducts (its steady case is accepted; the transient is "
+                                "not part of that; rating read from %s, via %s)"
+                                % (sub, part, pkv, net, peak, peak - pkv, src, where)))
+                    continue
+                if a_ok:
+                    accepted += 1
+                    out.append((sub, True,
+                                "%s (%s) on %s: %.4g V against %.4g V rated, OVER ITS "
+                                "RATING by %.3g V and %s (rating read from %s, via %s)"
+                                % (sub, part, net, v, mx, v - mx, a_txt, src, where)))
+                    continue
                 out.append((sub, False,
                             "%s (%s) is rated %.4g V and the steady-state worst case on %s "
                             "is %.4g V: the pin is over its rating whenever the board is on "
-                            "(rating read from %s, via %s)"
-                            % (sub, part, mx, net, v, src, where)))
+                            "(rating read from %s, via %s)%s"
+                            % (sub, part, mx, net, v, src, where,
+                               "; " + a_txt if a_txt else "")))
                 continue
             if pkv == "none":
                 out.append((sub, True,
@@ -1802,6 +1844,10 @@ def pin_voltage_ratings(ctx):
                     % (graded, rated, m[1], m[2], m[5], m[0], m[3],
                        "; %d pin(s) declared to have no net-to-ground rating, each with a "
                        "reason" % unratable if unratable else "")))
+    if accepted:
+        out.append(("accepted", None,
+                    "%d pin(s) run OVER their steady rating on a signed acceptance, each "
+                    "printed above with who, when, why and up to what voltage" % accepted))
     return out
 
 
