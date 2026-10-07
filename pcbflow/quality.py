@@ -1471,6 +1471,9 @@ def return_path_slots(ctx):
     def covered(lid, pt):
         return any(poly.Contains(pt) for poly in planes[lid])
 
+    # copper layers in stack-up order, front to back
+    order = {l: k for k, l in enumerate(b.GetEnabledLayers().CuStack())}
+
     gaps, checked = [], 0
     for t in b.GetTracks():
         if t.GetClass() == "PCB_VIA":
@@ -1478,22 +1481,32 @@ def return_path_slots(ctx):
         lid, net = t.GetLayer(), (t.GetNetname() or "")
         if not net or GROUND.match(net):
             continue
-        # the plane this signal references: ground copper on any OTHER copper layer
-        others = [l for l in planes if l != lid]
-        if not others:
+        # The plane this signal references is the NEAREST ground copper in the stack-up,
+        # not every ground polygon on the board: a track on In2 with a whole plane on In1
+        # beside it returns in that plane, and a gap in the component-side pour two
+        # layers away -- which every part on that side cuts -- is nothing to it. (Read
+        # against every other layer, a four-layer board with an unbroken plane failed on
+        # its own front pour.) Two ground layers at the same distance both count: the
+        # return is in whichever is there.
+        if lid not in order:
             continue
+        dist = {l: abs(order[l] - order[lid]) for l in planes if l != lid and l in order}
+        if not dist:
+            continue
+        near = min(dist.values())
+        others = [l for l in dist if dist[l] == near]
         ln = MM(t.GetLength())
         if ln < 1.0:
             continue
         checked += 1
         a, e = t.GetStart(), t.GetEnd()
         n = max(2, int(ln / step))
-        for lid2 in others:
+        if True:
             cov = []
             for i in range(n + 1):
                 f = i / float(n)
-                cov.append(covered(lid2, pcbnew.VECTOR2I(
-                    int(a.x + (e.x - a.x) * f), int(a.y + (e.y - a.y) * f))))
+                pt = pcbnew.VECTOR2I(int(a.x + (e.x - a.x) * f), int(a.y + (e.y - a.y) * f))
+                cov.append(any(covered(lid2, pt) for lid2 in others))
             i = 0
             while i <= n:
                 if cov[i]:

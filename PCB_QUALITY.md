@@ -418,7 +418,10 @@ that mattered and had only ever been asserted — and the widest cut any signal 
 3.03 mm, two tracks side by side. Both of those are now numbers instead of opinions.
 
 **How it is checked.** Every non-ground track longer than 1 mm is sampled every 0.25 mm
-and each sample tested against the filled ground polygons on every other copper layer.
+and each sample tested against the filled ground polygons on the NEAREST ground layer in
+the stack-up (both, where two are equally near): that is where the return runs. A gap in
+a pour further away, with a whole plane between it and the track, is not a cut in that
+signal's return.
 Only straddled gaps count. `quality.return_slot` sets the limit; `quality.return_slot_ok`
 lists nets exempted, and an entry is expected to say what carries that signal's return
 instead. A board with no ground pour gets a note saying so, and no claim.
@@ -919,3 +922,4 @@ Never renumber a rule: boards sign and waive by id.
 | 2026-10-06 | the 18 V watering-backpack board, its own M5 sign-off read back against its parts list | M5 had been signed in prose, and prose signs the parts the writer thought of: five parts were judged against the TVS's 38.9 V clamp and the two on the same rail rated UNDER it — a 30 V PTC and a 32 V blade-fuse holder — were not mentioned. The board was fine; the check was not made | **A16** (new, measured): every net declares its worst case, every pin its rating, and the pass names the tightest margin on the board |
 | 2026-10-06 | a fret-light board: two pairs of frets wired to the same four driver outputs | a loop in the generator read an index left over from the loop above. 24 nets where 32 were meant and eight outputs idle; routed, DRC-clean, quality-clean, because every check compared the board with its own netlist | A13: the board declares its unconnected pins and its nets per group, and the pass fails on any difference |
 | 2026-10-06 | a QFN-32 with one thermal via under the centre of its exposed pad | A14 read each paste-only window of the pad as a land of its own, so one 0.3 mm via under the centre window was "109 % of the joint" of a pad whose paste it is 12 % of. A hard failure on a correct board teaches people to distrust the rule | A14 counts paste to the copper pad under it; a paste-only aperture is not a land |
+| 2026-10-06 | a four-layer sensor board: tracks on In2, an unbroken ground plane on In1 beside them | A15 tested each track against EVERY other ground layer, so the component-side pour -- cut by every part on it -- read as a 10 mm slot under tracks whose return was in the whole plane next to them. The first exemption written for it was for a DC reference; the second finding was a 200 mA switched line, which is how the rule was caught rather than waived again | A15 references the nearest ground layer in the stack-up |
