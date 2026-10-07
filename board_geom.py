@@ -61,6 +61,7 @@ HEIGHT = {
     # chip passives, diodes, small-signal packages: package maximum heights
     "C_0402_1005Metric": 0.55, "R_0402_1005Metric": 0.50, "R_0603_1608Metric": 0.55,
     "C_0603_1608Metric": 0.90, "R_0805_2012Metric": 0.65,
+    "R_1206_3216Metric": 0.65,          # thick film, 0.55 +- 0.10 (UNI-ROYAL 1206 series)
     "C_0805_2012Metric": 1.45, "C_1206_3216Metric": 1.60, "C_1210_3225Metric": 1.80,
     "L_0603_1608Metric": 0.95, "Fuse_1206_3216Metric": 1.10,
     "Fuse_0805_2012Metric": 1.10,                # 0805 PTC: 1.0 max body + fillet
@@ -135,7 +136,7 @@ TAIL = {
     "C_0603_1608Metric": 0.0, "R_0805_2012Metric": 0.0,
     "JST_XH_B2B-XH-A_1x02_P2.50mm_Vertical": 3.4, "JST_XH_B4B-XH-A_1x04_P2.50mm_Vertical": 3.4, "JST_XH_B6B-XH-A_1x06_P2.50mm_Vertical": 3.4,   # cadkit.pcb XH_POST_TAIL
     "TestPoint_Pad_D1.5mm": 0.0, "TestPoint_Pad_D1.0mm": 0.0,
-    "C_1206_3216Metric": 0.0, "Fuse_1206_3216Metric": 0.0,
+    "C_1206_3216Metric": 0.0, "Fuse_1206_3216Metric": 0.0, "R_1206_3216Metric": 0.0,
     "Fuse_0805_2012Metric": 0.0, "TO-252-2": 0.0,
     "SolderJumper-3_P1.3mm_Bridged12_RoundedPad1.0x1.5mm": 0.0,
     "XINGLIGHT_XL-5050RGBW": 0.0,
