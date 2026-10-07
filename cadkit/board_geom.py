@@ -346,6 +346,16 @@ class Boards:
         A top-entry part lets go straight up off its mated plug. A SIDE-ENTRY part does
         not: its plug leaves through the board edge, so the answer is the mouth end of
         the body pushed out by the mated plug's run, at the contact axis (mid-body in z).
+
+        ⚠ A SIDE-ENTRY PART WITH NO REGISTERED PLUG RUN RAISES. It used to fall back to
+        the top-entry formula, silently, and that is the worst thing this function can do:
+        the answer it returned was a point 15.67 mm off the FACE of the board pointing at
+        the lid, for five terminal blocks whose mouths all face the other way. A harness
+        built on it would have drawn five cables leaving perpendicular to the board,
+        missing the cable chase entirely, and every gate would have PASSED -- the wrong
+        direction is still a valid point, so nothing downstream can tell. A caller that
+        gets an exception writes down the direction it knows; a caller that gets a number
+        believes it.
         """
         f = self.footprint(board, ref)
         t = self.load(board)["thickness_mm"]
@@ -361,9 +371,26 @@ class Boards:
             elif name.startswith("JST_PH_"):
                 h = self.ph_mated_h
             return (cx, cy, t + h)
-        run = self.side_plug_run.get(name[:7])
+        # LONGEST registered prefix, not name[:7]. Both keys in SIDE_PLUG_RUN happen to
+        # be 7 characters long, so the slice worked by coincidence and silently stopped
+        # working for any key of another length -- and the failure was a wrong number
+        # rather than a miss, see the warning above.
+        run = None
+        for key in sorted(self.side_plug_run, key=len, reverse=True):
+            if name.startswith(key):
+                run = self.side_plug_run[key]
+                break
         if run is None:
-            return (cx, cy, t + h)
+            raise KeyError(
+                "%s %s: %s says Horizontal, so its plug leaves through the board EDGE, "
+                "but no side_plug_run is registered for it (tried every prefix of %r "
+                "against %s). Register the mated plug's run -- Boards(..., "
+                "side_plug_run={'<fpid prefix>': <mm>}) -- or, if the direction is a "
+                "CONVENTION rather than a measurement, declare it in the caller and say "
+                "why there. This used to return the TOP-ENTRY point instead, which for a "
+                "side-entry part is not merely imprecise, it points the wrong way."
+                % (board, ref, f["fpid"], name,
+                   ", ".join(sorted(self.side_plug_run)) or "an empty table"))
         ax, lo, hi, _o, towards_hi = self._side_mouth(board, f)
         out = (hi + run) if towards_hi else (lo - run)
         z = t + h / 2.0
