@@ -197,6 +197,17 @@ def _grow(r, d):
     return [r[0] - d, r[1] - d, r[2] + d, r[3] + d]
 
 
+def _rect(b):
+    return [b.GetLeft(), b.GetTop(), b.GetRight(), b.GetBottom()]
+
+
+def _gap(a, b):
+    """Distance between two rects (0 if they touch or overlap)."""
+    dx = max(a[0] - b[2], b[0] - a[2], 0)
+    dy = max(a[1] - b[3], b[1] - a[3], 0)
+    return (dx * dx + dy * dy) ** 0.5
+
+
 def _hit(a, b):
     return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
 
@@ -342,7 +353,8 @@ class Side:
                 return z
         return 0
 
-    def _nearest(self, s, size, ang, near, reach, step, optics, rivals=None, inner=0.0):
+    def _nearest(self, s, size, ang, near, reach, step, optics, rivals=None, inner=0.0,
+                 ok=None):
         """The free site nearest `near` for `s` at `ang`, within `reach` mm (and outside
         `inner`): (d2, x, y, box) or None. With `rivals` (points), only a site nearer to
         `near` than to any of them counts -- a label out there is read as belonging to
@@ -362,12 +374,14 @@ class Side:
                                   < (x - near.x) ** 2 + (y - near.y) ** 2 for q in rivals):
                     continue
                 r = [b[0] + x, b[1] + y, b[2] + x, b[3] + y]
+                if ok is not None and not ok(r):
+                    continue
                 if self.free(r, optics):
                     best = (d2, x, y, r)
         return best
 
     def place(self, s, size, near, reach, step=0.25, optics=None, turn=None,
-              rivals=None, wider=True, own=False):
+              rivals=None, wider=True, own=False, ok=None):
         """Lay `s` at the free site nearest `near` (a VECTOR2I), no further than `reach`
         mm, at the board's reading direction. Returns True if it went down.
 
@@ -380,13 +394,14 @@ class Side:
         means nothing unless it is nearest its own pad (a way-1 mark)."""
         ang = self.read
         close = rivals if own else None
-        best = self._nearest(s, size, ang, near, reach, step, optics, rivals=close)
+        best = self._nearest(s, size, ang, near, reach, step, optics, rivals=close, ok=ok)
         if best is None and wider:
             best = self._nearest(s, size, ang, near, reach * WIDER, step, optics,
-                                 rivals=rivals, inner=reach)
+                                 rivals=rivals, inner=reach, ok=ok)
         if best is None and turn:
             ang = (self.read + 90.0) % 360.0
-            best = self._nearest(s, size, ang, near, reach, step, optics, rivals=close)
+            best = self._nearest(s, size, ang, near, reach, step, optics, rivals=close,
+                                 ok=ok)
             if best is not None:
                 self.turned.append((s.split(chr(10))[0], turn))
         if best is None:
@@ -816,11 +831,25 @@ def silk(stem, rev=None, dark=(), labels=None, short=None, refs=None, way_words=
         if last != 1 and (ref in ends or (len(ways) > LEGEND_MAX_PINS
                                           and _one_row(list(ways.values())))):
             marks.append(last)            # a long row: the far end gets its number too
+        # ⚠ AND NEARER ITS OWN CONNECTOR'S BODY THAN ANY OTHER CONNECTOR'S. A mark in the
+        # gap between two connectors is read as belonging to whichever body it is closer
+        # to (quality A17 attributes it the same way), and "nearest its own pad" does not
+        # settle that: a '1' under one header's pin 1 landed 0.05 mm nearer the jack below.
+        mine = _rect(cyb)
+        theirs = [_rect(o.GetCourtyard(pcbnew.B_CrtYd if o.IsFlipped()
+                                       else pcbnew.F_CrtYd).BBox())
+                  for o in fps if o is not fp and o.IsFlipped() == fp.IsFlipped()
+                  and o.GetReference().startswith("J")]
+        theirs = [q for q in theirs if q[2] > q[0] and q[3] > q[1]]
+
+        def own_side(r, mine=mine, theirs=theirs):
+            g = _gap(r, mine)
+            return all(g + MM(0.3) <= _gap(r, q) for q in theirs)
         for k in marks:
             what = "way-1" if k == 1 else "way-%d" % k
             others = [q.GetPosition() for n, q in ways.items() if n != k]
             if s.place(str(k), SIZE_J, ways[k].GetPosition(), far, rivals=others,
-                       wider=False, own=True,
+                       wider=False, own=True, ok=own_side,
                        turn="way %d's mark against its own pin (%s)" % (k, ref)):
                 done.append("%s %s mark" % (ref, what))
             elif k == 1 and s.dot(ways[k].GetPosition(), far, others):
