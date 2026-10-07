@@ -115,6 +115,11 @@ HINT = {
     "A4": "read every pin against the maker's datasheet AND the footprint's pad numbering "
           "(top vs bottom view; a connector from its MATING face), then cite document and "
           "page in quality.pinouts -- by ref, value or footprint",
+    "A21": "move the via out from under the part: re-home the signal to a pin on an open "
+           "side, or take it out on the top layer. Declare the part's largest slug in "
+           "notes['slug_max'] and layout fences the band for the router",
+    "A22": "put a ground way between them: order the connector power, ground, data (and "
+           "its mirror on a wider housing), the same on every lead of the family",
 }
 
 
@@ -138,6 +143,7 @@ HARD = {
     "A18": ("will be clipped",),
     "A19": ("",),
     "A20": ("",),
+    "A21": ("",),
     "A16": ("steady-state worst case", "can make NO CLAIM",
             "no worst-case voltage is declared", "NO voltage rating is declared",
             "states no `max`", "with no `src`", "gives no `why`"),
@@ -2266,6 +2272,90 @@ def pinout_not_read_as_pin_labels(ctx):
                                         for a, b in bad)))]
     return [("pinout position", True,
              "no pinout block lies along a connector's pad row within 3 mm")]
+
+
+@rule("A21")
+def no_via_under_a_slug(ctx):
+    """No via of another net stands under the largest exposed slug a part may arrive with.
+
+    The land is the slug's NOMINAL size; the slug has a tolerance and is bare metal at
+    the land's potential. notes["slug_max"] = {ref: (largest side in mm, source)} states
+    it; undeclared, the land itself is taken and the pass says so.
+    """
+    out = []
+    decl = ctx.notes.get("slug_max", {}) or {}
+    vias = [v for v in ctx.board.GetTracks() if v.GetClass() == "PCB_VIA"]
+    for ref in sorted(ctx.fps):
+        fp = ctx.fps[ref]
+        if not re.search(r"[0-9]EP|_EP[0-9]|-EP", fp.GetFPIDAsString().split(":")[-1]):
+            continue
+        smd = [p for p in fp.Pads() if p.GetNumber() and p.GetAttribute() == pcbnew.PAD_ATTRIB_SMD]
+        if not smd:
+            continue
+        ep = max(smd, key=lambda p: p.GetSize().x * p.GetSize().y)
+        bb = ep.GetBoundingBox()
+        hx, hy = MM(bb.GetWidth()) / 2.0, MM(bb.GetHeight()) / 2.0
+        said = ref in decl
+        if said:
+            hx = hy = max(hx, hy, float(decl[ref][0]) / 2.0)
+        c = ep.GetPosition()
+        bad = []
+        for v in vias:
+            if v.GetNetname() == ep.GetNetname():
+                continue
+            r = _via_dia(v) / 2.0
+            dx, dy = abs(MM(v.GetPosition().x - c.x)), abs(MM(v.GetPosition().y - c.y))
+            if dx < hx + r and dy < hy + r:
+                bad.append("%s (%.2f mm inside)" % (v.GetNetname() or "no net",
+                                                    min(hx + r - dx, hy + r - dy)))
+        what = ("its slug's largest %.2f mm (%s)" % (2 * hx, decl[ref][1]) if said else
+                "its %.1f x %.1f land (no slug_max declared: the land is taken as the slug)"
+                % (2 * hx, 2 * hy))
+        if bad:
+            out.append((ref, False, "%s: %d via(s) of another net under %s, with solder mask "
+                                    "alone between them and a slug on %s: %s"
+                        % (ref, len(bad), what, ep.GetNetname(), ", ".join(sorted(bad)))))
+        else:
+            out.append((ref, True, "%s: no via of another net under %s" % (ref, what)))
+    return out
+
+
+@rule("A22")
+def no_data_way_beside_power(ctx):
+    """On a wire-to-board connector no way that carries a signal stands next to a way
+    that carries a supply rail.
+
+    Two faults put neighbours together: a strand or a whisker between two crimps in the
+    housing, and a contact pushed into the next cavity when the lead is made. Ground
+    beside power is a blown fuse; a 3.3 V pin beside 24 V is a dead part somewhere down
+    the lead. Ways are read in pad-number order off wire-to-board footprints (JST, Molex
+    and their like); a way with no net, or one named as not connected, is nothing.
+    """
+    out = []
+    fam = re.compile(ctx.q.get("lead_footprints", r"JST|Molex|Hirose_DF|TE_|Wuerth_WR"), re.I)
+    for ref in sorted(ctx.fps, key=_nat):
+        fp = ctx.fps[ref]
+        if not fam.search(fp.GetFPIDAsString().split(":")[-1]):
+            continue
+        ways = {}
+        for p in fp.Pads():
+            if p.GetNumber().isdigit():
+                ways.setdefault(int(p.GetNumber()), p.GetNetname())
+        bad = []
+        for n in sorted(ways):
+            a, b = ways[n], ways.get(n + 1)
+            if b is None:
+                continue
+            for pw, sig, npw, nsig in ((a, b, n, n + 1), (b, a, n + 1, n)):
+                if (pw in ctx.power and sig and sig not in ctx.power
+                        and sig not in ctx.grounds and not NOT_CONNECTED.search(sig)):
+                    bad.append("way %d (%s) beside way %d (%s)" % (nsig, sig, npw, pw))
+        if bad:
+            out.append((ref, False, "%s: %s" % (ref, "; ".join(bad))))
+        elif any(w in ctx.power for w in ways.values()):
+            out.append((ref, True, "%s: %d ways, every way beside a supply is ground, a "
+                                   "supply or empty" % (ref, len(ways))))
+    return out
 
 
 @rule("A17")
