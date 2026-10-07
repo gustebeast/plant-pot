@@ -284,6 +284,14 @@ def _anchor_on_pads(fp, target):
 # 'escape' is a placement problem, 'run' an obstacle problem, 'edge' a board-outline one.
 _DBG = {}
 
+# THE GRAVEYARD. board.Remove() hands the removed item's ownership to its Python proxy,
+# and when that proxy is collected the C++ delete leaves pcbnew's bindings corrupt: the
+# next board.GetTracks() returns a bare SwigPyObject and the run dies AFTER the route
+# (fret_led_key, 681 s lost, 2026-10-06). Releasing every other proxy first does not
+# help (bisected); keeping the removed item alive does. So every item removed here is
+# leaked on purpose, for the life of the process.
+_REMOVED = []
+
 
 def _offset_poly(pts, ds, math):
     """`pts` offset by the signed per-vertex distances `ds`, corners mitred.
@@ -1201,6 +1209,7 @@ def drop_redundant_pth_vias(board):
             break
     for t, _why in doomed:
         board.Remove(t)
+        _REMOVED.append(t)
     if doomed:
         board.BuildConnectivity()
         print("  removed %d redundant via(s) drilled into a through-hole pad: %s"
@@ -1268,12 +1277,12 @@ def drop_redundant_pad_vias(board, notes):
             t.SetNetCode(nc)                   # it was carrying the net: keep it
         else:
             doomed[t.m_Uuid.AsString()] = why  # stays off the net for the tests that follow
-    del cand, lands, t, pad        # no proxy may outlive the via it names: Remove() below
-                                   # frees it, and the next GetTracks() then raises
+    del cand, lands
     for u in list(doomed):
         for t in board.GetTracks():
             if isinstance(t, pcbnew.PCB_VIA) and t.m_Uuid.AsString() == u:
                 board.Remove(t)
+                _REMOVED.append(t)
                 break
     board.BuildConnectivity()
     if doomed:
@@ -1566,6 +1575,7 @@ def drop_degenerate(board, floor_mm=0.005, width_frac=0.1):
               and t.GetLength() < max(floor, t.GetWidth() * width_frac)]
     for t in doomed:
         board.Remove(t)
+        _REMOVED.append(t)
     return len(doomed)
 
 
