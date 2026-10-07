@@ -1268,7 +1268,8 @@ def drop_redundant_pad_vias(board, notes):
             t.SetNetCode(nc)                   # it was carrying the net: keep it
         else:
             doomed[t.m_Uuid.AsString()] = why  # stays off the net for the tests that follow
-    del cand, lands
+    del cand, lands, t, pad        # no proxy may outlive the via it names: Remove() below
+                                   # frees it, and the next GetTracks() then raises
     for u in list(doomed):
         for t in board.GetTracks():
             if isinstance(t, pcbnew.PCB_VIA) and t.m_Uuid.AsString() == u:
