@@ -120,7 +120,7 @@ Millimetres, **board-centred, +Y up** (the CAD's frame — `layout.py` flips to 
 | `qty_per_instrument` | how many the product uses (for totals) |
 
 `layout.py` reads a few more, each documented where it is used (`diff_pairs`,
-`local_nets`, `corridors`, `via_keepouts`, `land_resize`, `post_route_*`,
+`local_nets`, `corridors`, `via_keepouts`, `slug_max`, `land_resize`, `post_route_*`,
 `repair_tracks`/`repair_vias`, `stitch_exceptions`). Reach for those only when a route
 shows you need one.
 
