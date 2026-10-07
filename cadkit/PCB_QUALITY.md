@@ -462,6 +462,10 @@ quality pass that was looking for them.
 
 **How it is checked.** Every via centre is tested against every SMD pad that opens the
 paste; a pad with no paste (a bare test pad) has no joint to starve and is skipped.
+A land is a COPPER pad: where a footprint windows the paste of a large pad (a QFN's
+exposed pad is one copper pad with no paste of its own under nine paste-only apertures),
+the apertures' paste is counted to the copper pad beneath them and an aperture is never a
+land by itself -- the joint that forms is the whole pad's.
 `quality.stencil_foil` and `quality.board_thickness` set the two constants;
 `quality.via_in_land_ok` lists lands exempted, which is where an order placed with the
 vias filled and capped is declared. `cadkit/pcbflow/unwick.py` runs after routing and
@@ -914,3 +918,4 @@ Never renumber a rule: boards sign and waive by id.
 | 2026-10-06 | a 24 V inlet and twenty photodiodes, both found in the fab's previewer | (1) the inlet's nets were assigned from the SUPPLY's pin table onto the JACK's pad numbers; the two makers number the four contacts differently and the board shorted the supply. (2) the photodiode's footprint numbered anode 1, the maker and the fab number the cathode lands 1 and 4, and the placement frame had been matched by number: all twenty a half turn out | M1 names the translation and asks for the position -> pad -> net table; M2 says a number fit is not orientation evidence |
 | 2026-10-06 | the 18 V watering-backpack board, its own M5 sign-off read back against its parts list | M5 had been signed in prose, and prose signs the parts the writer thought of: five parts were judged against the TVS's 38.9 V clamp and the two on the same rail rated UNDER it — a 30 V PTC and a 32 V blade-fuse holder — were not mentioned. The board was fine; the check was not made | **A16** (new, measured): every net declares its worst case, every pin its rating, and the pass names the tightest margin on the board |
 | 2026-10-06 | a fret-light board: two pairs of frets wired to the same four driver outputs | a loop in the generator read an index left over from the loop above. 24 nets where 32 were meant and eight outputs idle; routed, DRC-clean, quality-clean, because every check compared the board with its own netlist | A13: the board declares its unconnected pins and its nets per group, and the pass fails on any difference |
+| 2026-10-06 | a QFN-32 with one thermal via under the centre of its exposed pad | A14 read each paste-only window of the pad as a land of its own, so one 0.3 mm via under the centre window was "109 % of the joint" of a pad whose paste it is 12 % of. A hard failure on a correct board teaches people to distrust the rule | A14 counts paste to the copper pad under it; a paste-only aperture is not a land |

@@ -1547,14 +1547,33 @@ def via_in_land(ctx):
     thick = float(ctx.q.get("board_thickness", BOARD_THICK))
     allowed = set(ctx.q.get("via_in_land_ok", {}) or {})
 
+    # A land is COPPER. A footprint that windows the paste of a big pad (a QFN's exposed
+    # pad: one copper pad with no paste of its own, and nine paste-only apertures over
+    # it) prints ONE joint, so the apertures' paste is counted to the copper pad under
+    # them and an aperture is never a land by itself -- read as lands, a single thermal
+    # via under the centre window was "109 % of the joint" of a pad it is 12 % of.
+    def _cu(p):
+        return p.IsOnLayer(pcbnew.F_Cu) or p.IsOnLayer(pcbnew.B_Cu)
+
+    def _pasted(p):
+        return p.IsOnLayer(pcbnew.F_Paste) or p.IsOnLayer(pcbnew.B_Paste)
+
+    def _area(p):
+        return MM(p.GetSize().x) * MM(p.GetSize().y)
+
     lands = []
     for ref, fp in ctx.fps.items():
-        for p in fp.Pads():
-            if p.GetAttribute() != pcbnew.PAD_ATTRIB_SMD:
+        smd = [p for p in fp.Pads() if p.GetAttribute() == pcbnew.PAD_ATTRIB_SMD]
+        windows = [p for p in smd if _pasted(p) and not _cu(p)]
+        for p in smd:
+            if not _cu(p):
                 continue
-            if not (p.IsOnLayer(pcbnew.F_Paste) or p.IsOnLayer(pcbnew.B_Paste)):
+            box = p.GetBoundingBox()
+            area = (_area(p) if _pasted(p) else 0.0) + sum(
+                _area(w) for w in windows if box.Contains(w.GetPosition()))
+            if area <= 0.0:
                 continue          # no paste, no joint to starve: a bare test pad
-            lands.append((p, "%s.%s" % (ref, p.GetNumber())))
+            lands.append((p, "%s.%s" % (ref, p.GetNumber()), area))
     if not lands:
         return [("via in land", None, "no pasted SMD land on this board")]
 
@@ -1562,11 +1581,10 @@ def via_in_land(ctx):
     for t in b.GetTracks():
         if t.GetClass() != "PCB_VIA":
             continue
-        for p, name in lands:
+        for p, name, area in lands:
             if name in allowed or not p.GetBoundingBox().Contains(t.GetPosition()):
                 continue
-            sz = p.GetSize()
-            paste = MM(sz.x) * MM(sz.y) * foil
+            paste = area * foil
             barrel = math.pi * (MM(t.GetDrillValue()) / 2.0) ** 2 * thick
             found.append((barrel / paste, name, barrel, paste))
 
