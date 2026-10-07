@@ -13,7 +13,7 @@ the lead leave).
     pcb   = BOARDS.solid("controller")           # laminate + every part body + THT tails
     env   = BOARDS.solid("controller", mated=True)   # ...with plugs seated: what to clear
     m     = BOARDS.mouth("controller", "J1")     # a panel connector's mouth, board frame
-    ink   = BOARDS.silk("controller")            # the lettering, as its own part
+    ink   = BOARDS.ink("controller")             # the lettering, both faces, its own part
 
 `cadkit/board_check.py` then closes the loop: it probes the solid your project actually
 places in the assembly against the same file, so a board the CAD draws wrongly -- a part
@@ -446,6 +446,21 @@ class Boards:
         solids = []
         for s in out:
             solids += s.Solids()
+        return cq.Workplane("XY").newObject([cq.Compound.makeCompound(solids)])
+
+    def ink(self, board: str, refs: bool = True):
+        """ALL the board's lettering, both faces, as one part in solid()'s frame; None
+        for a board that prints nothing. This is the one to place beside solid():
+        `silk()` is one face, and an assembly that calls it once draws the front and
+        silently leaves out the back -- where a connector's pinout usually is.
+        `cadkit.board_check.check(..., ink=)` holds the assembly to it."""
+        sides = [w for w in (self.silk(board, s, refs) for s in ("F", "B")) if w is not None]
+        if not sides:
+            return None
+        solids = []
+        for w in sides:
+            for v in w.vals():
+                solids += v.Solids()
         return cq.Workplane("XY").newObject([cq.Compound.makeCompound(solids)])
 
     def solid(self, board: str, mated: bool = False, omit: tuple = (),
