@@ -2400,15 +2400,24 @@ def connector_labels(ctx):
 
     # a test pad's label is the test pad's: ink whose nearest pad on the whole board is a
     # TP's names that pad, however close a connector's contact on the same net is
-    probes = [_xy(q) for r, f in ctx.fps.items() if _prefix(r) == "TP" for q in f.Pads()]
+    # ...measured to each pad's COPPER, not its centre: a side-entry header's land is
+    # 3.5 mm long, and a "1" 1 mm off its end is 2.8 mm from its centre -- further than a
+    # test pad standing 2.3 mm away diagonally, which then took the mark for its own.
+    def _land(q):
+        bb = q.GetBoundingBox()
+        return (MM(bb.GetLeft()), MM(bb.GetTop()), MM(bb.GetRight()), MM(bb.GetBottom()))
+
+    probes = [_land(q) for r, f in ctx.fps.items() if _prefix(r) == "TP" for q in f.Pads()]
 
     def probe_label(centre):
         if not probes or not allpads:
             return False
-        d = min(math.dist(centre, q) for q in probes)
-        return d <= min(math.dist(centre, q) for q in allpads)
+        at = (centre[0], centre[1], centre[0], centre[1])
+        d = min(_box_gap(at, q) for q in probes)
+        return d <= min(_box_gap(at, q) for q in allpads)
 
-    allpads = [xy for _r, (_f, ws, _b) in conns.items() for xy in ws.values()]
+    allpads = [_land(q) for _r, (f, ws, _b) in conns.items() for q in f.Pads()
+               if q.GetNumber().isdigit() and int(q.GetNumber()) in ws]
     tally = collections.Counter()
     for ref in sorted(conns, key=_nat):
         fp, ways, _body = conns[ref]
