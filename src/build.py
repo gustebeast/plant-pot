@@ -22,7 +22,9 @@ import cadquery as cq
 # viewer hub — never raises), export_step() (names the STEP product after its
 # file), color() (cq.Color from hex / 0..255 / SVG names). See cadkit/README.md.
 from cadkit.freecad import show
-from cadkit.step_export import export_step
+from cadkit.step_export import export_print
+from cadkit.orientation import (PrintOrientation as PO,
+                                require_declared, unconfirmed)
 from cadkit.cq_colors import color
 
 # All outputs anchor to this script's folder, not the cwd — so `py -3.12 -m
@@ -88,11 +90,34 @@ PARTS = {
     "outer": (outer_pot, "plant_outer_pot.step", _OUTER_NOTE),
 }
 
+# ── PRINT ORIENTATION — every printed part's bed face, declared once
+# (cadkit's contract: see cadkit/AGENTS.md and cadkit.orientation). Export
+# reads THIS, so the STEPs land in the slicer already on the right face.
+#
+# Both pots were already declared, in prose, in README's "Print orientation"
+# section: upright, open end up, on the flat 2 mm floor, no supports
+# anywhere. Both are modelled that way too — floor at z = 0, growing up —
+# so the declaration is `None`, "models as printed". CONFIRMED because the
+# README states it as a print-validated decision with its reasoning (the
+# gabled hex perforations are 45° precisely so this orientation needs no
+# support); this is not a guess that needs settling.
+PRINT_ORIENTATION = {
+    "inner": PO(None, "upright, open end up, on the flat 2 mm floor "
+                      "(README: Print orientation) — the gabled 45 deg hex "
+                      "perforations are shaped for exactly this print, so it "
+                      "needs no support"),
+    "outer": PO(None, "upright on its flat floor, same as the inner pot "
+                      "(README: Print orientation). Plain solid, no holes: "
+                      "measured overhang-free in this orientation"),
+}
+require_declared(set(PARTS), PRINT_ORIENTATION)
+
 
 def _export(name: str, mesh: bool = False) -> str:
     obj, filename, note = PARTS[name]
     path = str(OUT / filename)
-    step(f"export {filename}", lambda: export_step(obj, path))
+    step(f"export {filename}",
+         lambda: export_print(obj, PRINT_ORIENTATION[name], path))
     suffix = f"  ({note})" if note else ""
     print(f"Wrote {path}{suffix}", flush=True)
     if mesh:
@@ -177,6 +202,14 @@ def main() -> None:
     p.add_argument("--list", action="store_true", help="List part names and exit.")
     p.add_argument("--mesh", action="store_true", help="Also write a 3MF mesh (off by default; slice from the STEP).")
     args = p.parse_args()
+
+    # 🚩 an UNCONFIRMED bed face is a guess nobody has checked — and the bed
+    # face decides which faces are overhangs, so work done on top of a guess
+    # can be silently wrong. Say so on every build (cadkit AGENTS.md).
+    flagged = unconfirmed(PRINT_ORIENTATION)
+    if flagged:
+        print("UNCONFIRMED print orientation (confirm with the user BEFORE "
+              "working on these parts): " + ", ".join(flagged), flush=True)
 
     if args.list:
         for name in PARTS:
