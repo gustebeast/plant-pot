@@ -1,13 +1,15 @@
 """Perforated Plant Pot — main build script.
 
 Run from the project folder:
-  py -3.12 -m src.build              # build both the inner (perforated) pot and the outer cachepot
+  py -3.12 -m src.build              # build the inner (perforated) pot — the usual case
+  py -3.12 -m src.build --part outer # build ONLY the outer cachepot
+  py -3.12 -m src.build --part both  # build both
   py -3.12 -m src.build --mesh       # also write a 3MF mesh (slice from the STEP otherwise)
   py -3.12 -m src.build --list       # list available part names
 
-Produces plant_inner_pot.step and plant_outer_pot.step next to this script,
-plus a combined assembly.step, and opens/refreshes it in the shared FreeCAD
-viewer.
+Produces plant_inner_pot.step (and/or plant_outer_pot.step) next to this
+project, and refreshes the model in the cadkit web viewer. No assembly.step is
+written — the viewer is handed the parts directly.
 """
 
 import argparse
@@ -18,10 +20,10 @@ import time
 
 import cadquery as cq
 
-# Shared helpers from Archive/3D/freecad: show() (opens/refreshes the FreeCAD
-# viewer hub — never raises), export_step() (names the STEP product after its
+# Shared helpers from cadkit: show() (opens/refreshes the web viewer tab
+# — never raises), export_step() (names the STEP product after its
 # file), color() (cq.Color from hex / 0..255 / SVG names). See cadkit/README.md.
-from cadkit.freecad import show
+from cadkit.web import show
 from cadkit.step_export import export_print
 from cadkit.orientation import (PrintOrientation as PO,
                                 require_declared, unconfirmed)
@@ -43,6 +45,18 @@ COLOR = {
     "build_counter": "#F0A878",
 }
 
+# `--part inner|outer|both` must be known BEFORE the geometry modules are
+# imported: pot.py builds at import time, and a part that wasn't asked for
+# shouldn't be built at all. Peek at argv here and hand it to pot.py as POT_PART
+# (which also works on its own: `POT_PART=both py -3.12 -m src.build`).
+# Default is the inner pot alone — the cachepot is rarely wanted.
+_pre = argparse.ArgumentParser(add_help=False)
+_pre.add_argument("--part", choices=("inner", "outer", "both"))
+_part_arg = _pre.parse_known_args()[0].part
+if _part_arg:
+    os.environ["POT_PART"] = _part_arg
+del _pre, _part_arg
+
 from . import dimensions as d
 from .helpers import heal, step
 from . import pot as _pot_mod
@@ -53,18 +67,23 @@ from . import pot as _pot_mod
 if os.environ.get("POT_NOBUILD") == "1":
     pot = outer_pot = None
 else:
-    pot       = heal(_pot_mod.pot, label="heal inner")
-    outer_pot = heal(_pot_mod.outer_pot, label="heal outer")
+    pot       = heal(_pot_mod.pot, label="heal inner") if _pot_mod.pot is not None else None
+    outer_pot = heal(_pot_mod.outer_pot, label="heal outer") if _pot_mod.outer_pot is not None else None
 
-_SHAPE_NOTE = f"{d.NUM_FACES}-sided" if d.IS_POLY else "round"
-_OD_NOTE = (f"Ø{d.POT_OD_BASE:.0f}-{d.POT_OD_TOP:.0f}" if d.IS_TAPER else f"Ø{d.POT_OD:.0f}")
+_SHAPE_NOTE = "rectangular" if d.IS_RECT else f"{d.NUM_FACES}-sided" if d.IS_POLY else "round"
+if d.IS_RECT:
+    _OD_NOTE = (f"{d.RECT_BASE[0]:g}x{d.RECT_BASE[1]:g} base - {d.RECT_TOP[0]:g}x{d.RECT_TOP[1]:g} top"
+                if d.IS_TAPER else f"{d.RECT_TOP[0]:g}x{d.RECT_TOP[1]:g}")
+else:
+    _OD_NOTE = (f"Ø{d.POT_OD_BASE:.0f}-{d.POT_OD_TOP:.0f}" if d.IS_TAPER else f"Ø{d.POT_OD:.0f}")
+_EXTENT_NOTE = "L x W" if d.IS_RECT else "across-corners" if d.IS_POLY else "across-diam"
 
 _handles_note = (f"{d.HANDLE_COUNT} grab handles ({d.HANDLE_FINGERS} gable finger holes each)"
                  if d.HANDLE_COUNT else "no handles")
 _ribs_note    = (f"{d.RIB_COUNT} internal ribs" if d.RIB_COUNT else "no internal ribs")
 _floor_note   = ("ribbed floor" if (d.FLOOR_SPOKE_COUNT or d.FLOOR_RING_COUNT) else "plain floor")
 _INNER_NOTE = (
-    f"{_SHAPE_NOTE} {_OD_NOTE} × {d.POT_H:.0f} mm (across-{'corners' if d.IS_POLY else 'diam'}"
+    f"{_SHAPE_NOTE} {_OD_NOTE} × {d.POT_H:.0f} mm ({_EXTENT_NOTE}"
     f"{', tapered' if d.IS_TAPER else ''}), "
     f"{d.WALL_T:g} mm wall + {d.FLOOR_T:g} mm floor; "
     f"vertical-slit wall + radial-slit floor perforation, "
@@ -77,14 +96,21 @@ _outer_od_top  = ((d.POT_OD_BASE + (d.POT_OD_TOP - d.POT_OD_BASE) * _outer_h / d
                   + 2.0 * d.WALL_T + 6.0)
 _OUTER_OD_NOTE = (f"Ø{_outer_od_base:.0f}-{_outer_od_top:.0f}" if d.IS_TAPER
                   else f"Ø{_outer_od_base:.0f}")
+if d.IS_RECT:
+    _o = 2.0 * d.WALL_T + 6.0
+    _bx, _by = d.rect_half(0.0)
+    _tx, _ty = d.rect_half(_outer_h)
+    _OUTER_OD_NOTE = (f"{2*_bx+_o:.0f}x{2*_by+_o:.0f} base - {2*_tx+_o:.0f}x{2*_ty+_o:.0f} top"
+                      if d.IS_TAPER else f"{2*_bx+_o:.0f}x{2*_by+_o:.0f}")
 _OUTER_NOTE = (
-    f"{_SHAPE_NOTE} outer cachepot {_OUTER_OD_NOTE} × {_outer_h:.0f} mm (across-"
-    f"{'corners' if d.IS_POLY else 'diam'}{', tapered' if d.IS_TAPER else ''}), "
+    f"{_SHAPE_NOTE} outer cachepot {_OUTER_OD_NOTE} × {_outer_h:.0f} mm ({_EXTENT_NOTE}"
+    f"{', tapered' if d.IS_TAPER else ''}), "
     f"{d.WALL_T:g} mm wall + {d.FLOOR_T:g} mm floor — sized to hold the inner pot with "
     f"3 mm clearance per side. Plain solid (no holes). Print in PETG."
 )
 
-# Map of part name → (workplane, output filename, optional note).
+# Map of part name → (workplane, output filename, optional note). A part that
+# wasn't built this run (--part / POT_PART) has workplane None.
 PARTS = {
     "inner": (pot,       "plant_inner_pot.step", _INNER_NOTE),
     "outer": (outer_pot, "plant_outer_pot.step", _OUTER_NOTE),
@@ -172,33 +198,32 @@ def _build_counter_model(n: int):
         return None
 
 
-def _export_assembly() -> None:
-    """Combined view model: the inner (perforated) pot nested in the outer
-    cachepot, saved as assembly.step for the shared FreeCAD viewer — each part
-    stays individually show/hide-able."""
+def _show() -> None:
+    """Hand the parts built this run to the web viewer (cadkit.web) — a list of
+    (name, solid, colour), no assembly STEP. With both pots built, the inner is
+    shown nested in the outer cachepot."""
     build_n = _bump_build_counter()
-    # Shift outer DOWN by (FLOOR_T + gap) so the inner-pot floor sits
-    # `_OUTER_FLOOR_GAP` above the outer's cavity floor (matches the per-side
-    # wall clearance). The exported STEP for the outer part is UN-shifted —
-    # this shift only affects the combined assembly view.
-    _outer_z = -(d.FLOOR_T + _OUTER_FLOOR_GAP)
-    asm = (cq.Assembly(name="plant_pot")
-           .add(pot,       name="inner_pot", color=color(COLOR["inner_pot"]))
-           .add(outer_pot, name="outer_pot", color=color(COLOR["outer_pot"]),
-                loc=cq.Location((0, 0, _outer_z))))
+    parts = []
+    if pot is not None:
+        parts.append(("inner_pot", pot, color(COLOR["inner_pot"])))
+    if outer_pot is not None:
+        # Shift outer DOWN by (FLOOR_T + gap) so the inner-pot floor sits
+        # `_OUTER_FLOOR_GAP` above the outer's cavity floor (matches the per-side
+        # wall clearance). The exported STEP for the outer part is UN-shifted —
+        # this shift only affects the combined view.
+        _outer_z = -(d.FLOOR_T + _OUTER_FLOOR_GAP) if pot is not None else 0.0
+        parts.append(("outer_pot", outer_pot.translate((0, 0, _outer_z)), color(COLOR["outer_pot"])))
     counter = _build_counter_model(build_n)
     if counter is not None:
-        asm.add(counter, name="build_counter", color=color(COLOR["build_counter"]))
-    path = str(OUT / "assembly.step")
-    step("export assembly.step", lambda: asm.save(path))
-    print(f"Wrote {path}  [build #{build_n}]", flush=True)
-    show(path)
+        parts.append(("build_counter", counter, color(COLOR["build_counter"])))
+    print(f"[build #{build_n}]", flush=True)
+    step("web viewer", lambda: show(parts, root=OUT, title="Plant pot"))
 
 
 def main() -> None:
     p = argparse.ArgumentParser(prog="src.build", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--part", help="Build only this part.")
+    p.add_argument("--part", choices=(*PARTS, "both"), help="Which pot to build (default: inner).")
     p.add_argument("--list", action="store_true", help="List part names and exit.")
     p.add_argument("--mesh", action="store_true", help="Also write a 3MF mesh (off by default; slice from the STEP).")
     args = p.parse_args()
@@ -216,16 +241,19 @@ def main() -> None:
             print(name)
         return
 
-    if args.part:
-        if args.part not in PARTS:
-            print(f"unknown part: {args.part!r}. Use --list to see options.", file=sys.stderr)
-            sys.exit(2)
-        _export(args.part, mesh=args.mesh)
-    else:
-        for name in PARTS:
+    for name, (obj, filename, _note) in PARTS.items():
+        if obj is not None:
             _export(name, mesh=args.mesh)
+            continue
+        # Not built this run. A leftover STEP from an earlier, different pot
+        # would sit next to the fresh one looking like its matching half —
+        # remove it so the folder only ever holds parts from THIS build.
+        stale = OUT / filename
+        if stale.exists():
+            stale.unlink()
+            print(f"Removed stale {filename} (not built this run — it was from an earlier build)", flush=True)
 
-    _export_assembly()
+    _show()
 
 
 # Guard the top-level main() call so `multiprocessing` on Windows (spawn

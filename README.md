@@ -44,14 +44,23 @@ Uses the same cadquery build setup as the `retractable-cable-spool` project.
 
 ```bash
 py -3.12 -m pip install cadquery
-py -3.12 -m src.build                  # build both pots + assembly.step, open in the FreeCAD viewer
+py -3.12 -m src.build                  # build the inner pot, refresh the cadkit web viewer (removes a stale plant_outer_pot.step)
+py -3.12 -m src.build --part outer     # ONLY the outer cachepot
+py -3.12 -m src.build --part both      # both pots
 py -3.12 -m src.build --list           # list available part names
+```
+
+Rectangular pots (unequal sides, each axis with its own taper — e.g. to fill a
+trough planter) use `POT_RECT_TOP` / `POT_RECT_BASE` = outer `LxW` in mm:
+
+```bash
+POT_RECT_TOP=192x208 POT_RECT_BASE=177x188 POT_H=239.7 py -3.12 -m src.build
 ```
 
 (or run the convenience wrapper: `./build.sh`)
 
-This produces `plant_inner_pot.step`, `plant_outer_pot.step`, and a combined
-`assembly.step` in the repo root. Geometry-regression check:
+This produces `plant_inner_pot.step` (and `plant_outer_pot.step` when the
+cachepot is built) in the repo root. Geometry-regression check:
 
 ```bash
 py -3.12 tools/check_geometry.py             # diff against committed baseline
@@ -60,9 +69,10 @@ py -3.12 tools/check_geometry.py --update-baseline   # bless current as new base
 
 ### Viewing
 
-Every `src.build` finishes by opening (or refreshing) `assembly.step` in the
-shared FreeCAD viewer hub (`../freecad/`) — best-effort, and it never fails the
-build. See `../freecad/README.md`.
+Every `src.build` finishes by refreshing the model in the cadkit web viewer
+(`cadkit.web` — the run prints the URL) — best-effort, and it never fails the
+build. The viewer is handed the parts directly; no `assembly.step` is written.
+`py -3.12 -m cadkit.web.view` reopens the last model without building.
 
 > Note: the fine perforation makes the inner-pot STEP heavy — scales with the
 > hole count, so ~tens of MB for the Ø115 pot, well over 100 MB at Ø250. A big
@@ -76,7 +86,7 @@ build. See `../freecad/README.md`.
 | `src/dimensions.py`    | All dimensional / material / print constants, with the design rationale + load-fast asserts |
 | `src/helpers.py`       | Geometric helpers (`cyl`, `tube`, `compound`, `hex_prism`, `hex_prism_z`, `slot_prism`, `heal`) |
 | `src/pot.py`           | The pot body: shell → wall hex perforation → grab handles → floor hex perforation → vertical ribs → floor ribs → optional drainage. Cuts the thousands of tiny hex holes in chunked batches (`_cut_many`) |
-| `src/build.py`         | Orchestrator: builds the pots, heals them, exports the STEPs + `assembly.step`, opens the FreeCAD viewer. CLI: `--part NAME` / `--list` |
+| `src/build.py`         | Orchestrator: builds the pots, heals them, exports the STEPs, refreshes the web viewer. CLI: `--part inner|outer|both` (default inner) / `--list` |
 | `tools/check_geometry.py` | bbox / volume / CoM regression check vs `tools/baseline.tsv`        |
 
 ## Outputs

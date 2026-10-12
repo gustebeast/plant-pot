@@ -69,6 +69,25 @@ LINE_WIDTH = 0.8
 # Override at build time without editing: `POT_NUM_FACES=8 py -3.12 -m src.build`.
 NUM_FACES = int(os.environ.get("POT_NUM_FACES", "0"))
 
+# ── Rectangular cross-section (a 4-sided pot with unequal sides) ─────────────
+# POT_RECT_TOP="LxW" (outer, mm: L along X, W along Y) switches to a rectangle;
+# POT_RECT_BASE="LxW" gives the base (defaults to the top = straight walls), so
+# the two axes may taper by different amounts (a trough-shaped planter box).
+#   `POT_RECT_TOP=192x208 POT_RECT_BASE=177x188 POT_H=240 py -3.12 -m src.build --part inner`
+# It rides on the polygon machinery as a 4-gon whose X faces (0°/180°) and Y
+# faces (90°/270°) have their own apothems — see face_apo_out() below. The
+# scalar "regular polygon" sizes (POT_OD, R_OUT, APO_*) then describe the
+# INSCRIBED SQUARE (the short axis), which is what the sizing heuristics want.
+def _parse_rect(v: str) -> tuple[float, float]:
+    a, b = v.lower().replace("×", "x").split("x")
+    return float(a), float(b)
+
+IS_RECT = "POT_RECT_TOP" in os.environ
+if IS_RECT:
+    NUM_FACES = 4
+    RECT_TOP  = _parse_rect(os.environ["POT_RECT_TOP"])
+    RECT_BASE = _parse_rect(os.environ.get("POT_RECT_BASE", os.environ["POT_RECT_TOP"]))
+
 # ── Overall pot ──────────────────────────────────────────────────────────────
 # Outer size is given at the BASE and the TOP separately so the wall can taper
 # (most pots are narrower at the bottom). The wall then grows at a single, even
@@ -83,6 +102,10 @@ NUM_FACES = int(os.environ.get("POT_NUM_FACES", "0"))
 _OD          = float(os.environ.get("POT_OD", "115.0"))
 POT_OD_TOP   = float(os.environ.get("POT_OD_TOP", str(_OD)))   # opening (widest) — must clear the cachepot
 POT_OD_BASE  = float(os.environ.get("POT_OD_BASE", str(_OD)))  # base (usually narrower)
+if IS_RECT:
+    # Across-corners size of the inscribed square at each end (short side · √2).
+    POT_OD_TOP  = min(RECT_TOP)  * math.sqrt(2.0)
+    POT_OD_BASE = min(RECT_BASE) * math.sqrt(2.0)
 POT_OD       = POT_OD_TOP                                       # nominal outer extent = the top
 del _OD
 
@@ -107,7 +130,7 @@ COS_HALF = math.cos(math.pi / NUM_FACES) if IS_POLY else 1.0   # apothem / circu
 
 R_TOP    = POT_OD_TOP  / 2.0   # outer circumradius at the top  (z = POT_H)
 R_BASE   = POT_OD_BASE / 2.0   # outer circumradius at the base (z = 0)
-IS_TAPER = abs(R_TOP - R_BASE) > 1e-6
+IS_TAPER = abs(R_TOP - R_BASE) > 1e-6 or (IS_RECT and RECT_TOP != RECT_BASE)
 
 # Outer circumradius / apothem as functions of height (the even-draft taper).
 # A circle is COS_HALF = 1, so apothem == circumradius.
@@ -140,6 +163,38 @@ def _ang_dist_deg(a: float, b: float) -> float:
 
 # Outward-normal bearing of each polygon face; face 0 points at 0°.
 FACE_ANGLES = [i * 360.0 / NUM_FACES for i in range(NUM_FACES)] if IS_POLY else []
+
+
+def rect_half(z: float) -> tuple[float, float]:
+    """Outer half-extents (x, y) of a rectangular pot at height z."""
+    f = z / POT_H
+    return ((RECT_BASE[0] + (RECT_TOP[0] - RECT_BASE[0]) * f) / 2.0,
+            (RECT_BASE[1] + (RECT_TOP[1] - RECT_BASE[1]) * f) / 2.0)
+
+
+def _is_x_face(phi: float) -> bool:
+    return _ang_dist_deg(phi, 0.0) < 45.0 or _ang_dist_deg(phi, 180.0) < 45.0
+
+
+def face_apo_out(phi: float, z: float) -> float:
+    """Outer-wall distance from the axis along the face normal at bearing
+    ``phi``. Same for every face of a regular polygon; per-axis on a rectangle."""
+    if not IS_RECT:
+        return apo_out_at(z)
+    hx, hy = rect_half(z)
+    return hx if _is_x_face(phi) else hy
+
+
+def face_apo_in(phi: float, z: float) -> float:
+    return face_apo_out(phi, z) - WALL_T
+
+
+def face_half_w(phi: float, z: float) -> float:
+    """Half the outer width of the flat face at bearing ``phi`` (corner to corner)."""
+    if not IS_RECT:
+        return rc_out_at(z) * math.sin(math.pi / NUM_FACES)
+    hx, hy = rect_half(z)
+    return hy if _is_x_face(phi) else hx
 
 
 def _snap_to_face(angle: float) -> float:
@@ -303,10 +358,20 @@ FLOOR_RIB_T        = WALL_T                             # rib thickness — same
 # a stiffer waffle. (POT_FLOOR_RIB_H / POT_FLOOR_SPOKES / POT_FLOOR_RINGS env vars.)
 FLOOR_RIB_H        = (float(os.environ["POT_FLOOR_RIB_H"]) if "POT_FLOOR_RIB_H" in os.environ
                       else max(5.0, min(12.0, APO_IN_BASE * 0.08)))
+# Small-floor mode: a pot can be too big for tiny-pot mode (its TOP is over
+# 60 mm, so it still wants handles and wall ribs) yet stand on a base only a
+# few cm across — e.g. Ø45 → Ø85. A floor that small doesn't bow, and the
+# waffle's keep-outs (plus the drain pipe's) would leave no room for a single
+# drainage slit, so by default it gets no floor ribs. POT_FLOOR_SPOKES /
+# POT_FLOOR_RINGS still force them.
+SMALL_FLOOR_R = 30.0                              # base inner radius (mm) under which the floor waffle is dropped
+_SMALL_FLOOR  = APO_IN_BASE < SMALL_FLOOR_R
 if _LIGHT:
     FLOOR_SPOKE_COUNT = 0       # tiny pot: no floor waffle at all (the membrane doesn't bow at this size)
 elif "POT_FLOOR_SPOKES" in os.environ:
     FLOOR_SPOKE_COUNT = int(os.environ["POT_FLOOR_SPOKES"])
+elif _SMALL_FLOOR:
+    FLOOR_SPOKE_COUNT = 0       # small floor: no waffle (see SMALL_FLOOR_R)
 elif IS_POLY:
     # One spoke per face by default (each wall rib / corner gets a spoke). A
     # bigger pot wants more — set POT_FLOOR_SPOKES to a multiple of NUM_FACES so
@@ -327,6 +392,7 @@ if _LIGHT:
     FLOOR_RING_COUNT = 0
 else:
     FLOOR_RING_COUNT = (int(os.environ["POT_FLOOR_RINGS"]) if "POT_FLOOR_RINGS" in os.environ
+                        else 0 if _SMALL_FLOOR
                         else max(1, round(APO_IN_BASE / 60.0)))   # concentric ring ribs; scales with the floor radius
 FLOOR_RING_RADII   = [APO_IN_BASE * (i + 1) / (FLOOR_RING_COUNT + 1) for i in range(FLOOR_RING_COUNT)]   # evenly spread; inside the base inscribed circle
 # Spokes run from the innermost ring rib out to the wall — *not* into the centre.
@@ -345,7 +411,12 @@ FLOOR_PERF_R_IN    = 0.0                                   # floor holes fill al
 # landscape fabric if planting straight into the pot. The floor prints flat on
 # the bed — no bridging — just a little less bed contact (use a brim).
 FLOOR_PERF          = True
-FLOOR_PERF_FRAME    = 5.0             # solid gap kept between a floor hole and any rib / the rim / the centre
+# Solid gap kept between a floor hole and any rib / the rim / the drain pipe.
+# 5 mm on a normal floor; scaled down with the base (to half a ligament at the
+# least) so a small floor isn't all keep-out — at Ø45 a fixed 5 mm left ZERO
+# slits. Unchanged for a base inner radius of 50 mm and up. POT_FLOOR_FRAME overrides.
+FLOOR_PERF_FRAME    = (float(os.environ["POT_FLOOR_FRAME"]) if "POT_FLOOR_FRAME" in os.environ
+                       else max(SLIT_LIG / 2.0, min(5.0, APO_IN_BASE * 0.1)))
 
 # ── Drainage (a few clean round holes) ──────────────────────────────────────
 # Largely redundant once FLOOR_PERF is on (the hex floor already drains).
@@ -389,9 +460,8 @@ DRAIN_CHANNEL_OD_RECESS    =  0.5    # the pipe's outer face sits this far insid
 # so the pipe follows it — a straight oblique tube whose axis runs from R_AXIS_BASE
 # at the floor to R_AXIS_TOP at the rim (keeping the same recess, and the merge
 # into the wall, at every height). The floor bore sits at the base end.
-DRAIN_CHANNEL_R_AXIS_TOP   = apo_out_at(POT_H) - DRAIN_CHANNEL_TUBE_OR - DRAIN_CHANNEL_OD_RECESS
-DRAIN_CHANNEL_R_AXIS_BASE  = apo_out_at(0.0)   - DRAIN_CHANNEL_TUBE_OR - DRAIN_CHANNEL_OD_RECESS
-DRAIN_CHANNEL_R_AXIS       = DRAIN_CHANNEL_R_AXIS_TOP    # reference (top); the pipe slants between base & top
+# (Computed just below, once DRAIN_CHANNEL_ANGLE is known — on a rectangle the
+# wall distance depends on which face the channel sits on.)
 DRAIN_CHANNEL_FLOOR_BORE_R = DRAIN_CHANNEL_R_CH                                       # bore-through-floor = pipe bore (matched so no ledge inside the pipe base)
 if not DRAIN_CHANNEL or RIB_COUNT == 0:
     DRAIN_CHANNEL_ANGLE    = 0.0                              # unused if no drain channel; safe default
@@ -400,6 +470,9 @@ elif IS_POLY:
     DRAIN_CHANNEL_ANGLE    = max(FACE_ANGLES, key=lambda f: min(_ang_dist_deg(f, a) for a in RIB_ANGLES))
 else:
     DRAIN_CHANNEL_ANGLE    = 180.0 / RIB_COUNT               # midway between the first two ribs (always clear of handles and ribs)
+DRAIN_CHANNEL_R_AXIS_TOP   = face_apo_out(DRAIN_CHANNEL_ANGLE, POT_H) - DRAIN_CHANNEL_TUBE_OR - DRAIN_CHANNEL_OD_RECESS
+DRAIN_CHANNEL_R_AXIS_BASE  = face_apo_out(DRAIN_CHANNEL_ANGLE, 0.0)   - DRAIN_CHANNEL_TUBE_OR - DRAIN_CHANNEL_OD_RECESS
+DRAIN_CHANNEL_R_AXIS       = DRAIN_CHANNEL_R_AXIS_TOP    # reference (top); the pipe slants between base & top
 # Keep-out is widest where the axis is closest in (the base on a flared pot).
 DRAIN_CHANNEL_KEEPOUT_DEG  = math.degrees(math.asin(min(0.95, (DRAIN_CHANNEL_TUBE_OR + 1.0) / DRAIN_CHANNEL_R_AXIS_BASE))) + 3.0
 # The pipe wall is perforated only on its *inward* (soil-facing) side — a hole
@@ -464,13 +537,18 @@ if DRAIN_CHANNEL:
         "drain channel overlaps a vertical rib — pick a different DRAIN_CHANNEL_ANGLE"
     assert DRAIN_CHANNEL_R_AXIS_BASE > 0, "channel pipe sticks out past the base wall — hose too big for the base diameter"
     assert DRAIN_CHANNEL_R_AXIS_BASE - DRAIN_CHANNEL_R_CH > 0, "channel pipe bore reaches past the pot centre at the base — hose too big for the base diameter"
-    assert DRAIN_CHANNEL_R_AXIS_TOP + DRAIN_CHANNEL_TUBE_OR > APO_IN, "channel pipe wouldn't reach the wall to merge with it — geometry off"
+    assert DRAIN_CHANNEL_R_AXIS_TOP + DRAIN_CHANNEL_TUBE_OR > face_apo_in(DRAIN_CHANNEL_ANGLE, POT_H), "channel pipe wouldn't reach the wall to merge with it — geometry off"
 
 # ── Config summary ──────────────────────────────────────────────────────────
 _chan_str = (f" | drain channel @ {DRAIN_CHANNEL_ANGLE:.0f}deg for "
              f"hose {DRAIN_CHANNEL_HOSE_D:g} mm") if DRAIN_CHANNEL else ""
-_shape_str = f"{NUM_FACES}-gon (corner r {CORNER_FILLET:g})" if IS_POLY else "round"
-_od_str = (f"OD {POT_OD_BASE:.0f}->{POT_OD_TOP:.0f}" if IS_TAPER else f"OD {POT_OD:.0f}")
+_shape_str = ("rectangular" if IS_RECT else
+              f"{NUM_FACES}-gon (corner r {CORNER_FILLET:g})" if IS_POLY else "round")
+if IS_RECT:
+    _od_str = (f"{RECT_BASE[0]:g}x{RECT_BASE[1]:g} -> {RECT_TOP[0]:g}x{RECT_TOP[1]:g}" if IS_TAPER
+               else f"{RECT_TOP[0]:g}x{RECT_TOP[1]:g}")
+else:
+    _od_str = (f"OD {POT_OD_BASE:.0f}->{POT_OD_TOP:.0f}" if IS_TAPER else f"OD {POT_OD:.0f}")
 _handles_str = (f"{HANDLE_COUNT} handles x {HANDLE_FINGERS} fingers" if HANDLE_COUNT else "no handles")
 _ribs_str    = (f"{RIB_COUNT} vertical ribs ({RIB_PROJ:.1f} mm deep)" if RIB_COUNT else "no vertical ribs")
 _floor_str   = (f"floor: {FLOOR_SPOKE_COUNT} spokes + {FLOOR_RING_COUNT} ring(s), {FLOOR_RIB_H:.1f} mm tall"

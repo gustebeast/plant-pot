@@ -45,6 +45,7 @@ from .dimensions import (
     IS_POLY, NUM_FACES, FACE_ANGLES, APO_OUT, APO_IN, CORNER_FILLET,
     IS_TAPER, R_BASE, R_TOP, COS_HALF, APO_IN_BASE,
     rc_out_at, rc_in_at, apo_out_at, apo_in_at,
+    IS_RECT, rect_half, face_apo_out, face_apo_in, face_half_w,
     SLIT_W, SLIT_H, SLIT_LIG, SLIT_COL_PITCH, SLIT_ROW_PITCH, SLIT_HALF_H, SLIT_HALF_W,
     PERF_Z_LO, PERF_Z_HI, PERF_TOP_Z,
     HANDLE_ANGLES, HANDLE_W, HANDLE_FINGERS, HANDLE_FINGER_H, HANDLE_FINGER_AF, HANDLE_FINGER_GAP,
@@ -87,6 +88,19 @@ def _taper_section(base_r: float, top_r: float, z0: float, z1: float) -> cq.Work
             .loft(ruled=True))
 
 
+def _rect_section(inset: float, z0: float, z1: float) -> cq.Workplane:
+    """Rectangular (possibly tapered) solid from z0 to z1 whose faces sit
+    ``inset`` inside the pot's outer wall at every height (negative = outside).
+    A ruled loft between the two rectangles — planar faces, so it cuts fast."""
+    def _pts(z):
+        hx, hy = rect_half(z)
+        hx, hy = hx - inset, hy - inset
+        return [(hx, hy), (-hx, hy), (-hx, -hy), (hx, -hy)]
+    return (cq.Workplane("XY").workplane(offset=z0).polyline(_pts(z0)).close()
+            .workplane(offset=z1 - z0).polyline(_pts(z1)).close()
+            .loft(ruled=True))
+
+
 def _fillet_vertical_corners(wp: cq.Workplane, radius: float) -> cq.Workplane:
     """Fillet the (near-)vertical corner edges of a (possibly tapered) prism —
     selected as the edges whose endpoints span most of the height, so it works
@@ -106,6 +120,12 @@ def _shell() -> cq.Workplane:
     OD to the top OD when those differ (IS_TAPER)."""
     bore_h = (POT_H - FLOOR_T) + BOOL_OVERSHOOT     # cavity from the floor top up through the rim
     inner_fillet = max(0.0, CORNER_FILLET - WALL_T)  # keep the wall ~uniform around the corner
+
+    if IS_RECT:
+        outer = _fillet_vertical_corners(_rect_section(0.0, 0.0, POT_H), CORNER_FILLET)
+        bore  = _fillet_vertical_corners(
+            _rect_section(WALL_T, FLOOR_T, POT_H + BOOL_OVERSHOOT), inner_fillet)
+        return outer.cut(bore)
 
     if not IS_TAPER:
         # Straight wall — keep the original prism/cylinder construction.
@@ -219,11 +239,8 @@ def _wall_slit_cutters_poly() -> list[cq.Workplane]:
     z_first = PERF_Z_LO + SLIT_HALF_H
 
     corner_margin = CORNER_FILLET + SLIT_LIG + SLIT_HALF_W
-    def t_max_at(z):
-        return rc_out_at(z) * math.sin(math.pi / NUM_FACES) - corner_margin
-    n_cols = max(0, int(t_max_at(POT_H) / col_pitch) + 1)
-
-    base = slit_prism(SLIT_W, SLIT_H, apo_in_at(0.0) - BOOL_OVERSHOOT, apo_out_at(POT_H) + BOOL_OVERSHOOT)
+    def t_max_at(phi, z):
+        return face_half_w(phi, z) - corner_margin
 
     rib_keep    = RIB_W / 2.0 + SLIT_LIG + SLIT_HALF_W
     handle_keep = HANDLE_W / 2.0 + HANDLE_FRAME
@@ -233,6 +250,11 @@ def _wall_slit_cutters_poly() -> list[cq.Workplane]:
 
     cutters: list[cq.Workplane] = []
     for phi in FACE_ANGLES:
+        # Per face: on a rectangle each face has its own width and wall distance.
+        n_cols = max(0, int(max(t_max_at(phi, 0.0), t_max_at(phi, POT_H)) / col_pitch) + 1)
+        base = slit_prism(SLIT_W, SLIT_H,
+                          min(face_apo_in(phi, 0.0), face_apo_in(phi, POT_H)) - BOOL_OVERSHOOT,
+                          max(face_apo_out(phi, 0.0), face_apo_out(phi, POT_H)) + BOOL_OVERSHOOT)
         has_handle = any(_angular_dist_deg(phi, ha) < 1.0 for ha in HANDLE_ANGLES)
         has_rib    = any(_angular_dist_deg(phi, ra) < 1.0 for ra in RIB_ANGLES)
         has_chan   = DRAIN_CHANNEL and _angular_dist_deg(phi, DRAIN_CHANNEL_ANGLE) < 1.0
@@ -240,7 +262,7 @@ def _wall_slit_cutters_poly() -> list[cq.Workplane]:
             z_c = z_first + ri * row_pitch
             in_handle_band = (z_c + SLIT_HALF_H > handle_z_lo) and (z_c - SLIT_HALF_H < handle_z_hi)
             shift = (col_pitch / 2.0) if (ri % 2) else 0.0
-            row_t_max = t_max_at(z_c)
+            row_t_max = t_max_at(phi, z_c)
             for ci in range(-n_cols, n_cols + 1):
                 t = ci * col_pitch + shift
                 if abs(t) > row_t_max:
@@ -274,12 +296,15 @@ def _handle_cutters() -> list[cq.Workplane]:
     offsets = [(i - (n - 1) / 2.0) * pitch for i in range(n)]      # centred tangential offsets
     # Round wall: a deep radial slab (so edge holes clear the curve). Flat face:
     # punch straight through the panel (no curvature to clear).
-    if IS_POLY:
-        finger = gable_prism(HANDLE_FINGER_AF, side_h, apo_in_at(0.0) - BOOL_OVERSHOOT, apo_out_at(POT_H) + BOOL_OVERSHOOT)
-    else:
-        finger = gable_prism(HANDLE_FINGER_AF, side_h, RADIAL_CUT_LO, RADIAL_CUT_HI)
+    def _finger(a):
+        if IS_POLY:
+            return gable_prism(HANDLE_FINGER_AF, side_h,
+                               min(face_apo_in(a, 0.0), face_apo_in(a, POT_H)) - BOOL_OVERSHOOT,
+                               max(face_apo_out(a, 0.0), face_apo_out(a, POT_H)) + BOOL_OVERSHOOT)
+        return gable_prism(HANDLE_FINGER_AF, side_h, RADIAL_CUT_LO, RADIAL_CUT_HI)
     cutters: list[cq.Workplane] = []
     for a in HANDLE_ANGLES:
+        finger = _finger(a)
         for off in offsets:
             cutters.append(finger.translate((0.0, off, HANDLE_Z_MID)).rotate((0, 0, 0), (0, 0, 1), a))
     return cutters
@@ -303,6 +328,10 @@ def _floor_slit_cutters() -> list[cq.Workplane]:
 
     rc_in_base = APO_IN_BASE / COS_HALF
     r_outer_lim = (APO_IN_BASE if IS_POLY else rc_in_base) - clear
+    if IS_RECT:
+        # Rings run out into the long axis / corners; the per-face clip below
+        # trims each one to the rectangle.
+        r_outer_lim = math.hypot(*rect_half(0.0)) - WALL_T - clear
     # A slit centred at r spans [r - SLIT_HALF_H, r + SLIT_HALF_H] radially.
     # Keep the inner end past the centre by at least half a ligament, so
     # opposite-side slits don't overlap through the origin (OCCT boolean cost
@@ -313,7 +342,7 @@ def _floor_slit_cutters() -> list[cq.Workplane]:
 
     spoke_step = 360.0 / FLOOR_SPOKE_COUNT if FLOOR_SPOKE_COUNT else 360.0
     face_normals = [(math.cos(math.radians(a)), math.sin(math.radians(a))) for a in FACE_ANGLES]
-    apo_clip = APO_IN_BASE - clear
+    apo_clips = [face_apo_in(a, 0.0) - clear for a in FACE_ANGLES]
 
     chan_x = chan_y = 0.0
     chan_clear = -1.0
@@ -344,7 +373,8 @@ def _floor_slit_cutters() -> list[cq.Workplane]:
             ang = (ci * d_ang + shift) % 360.0
             cx  = r * math.cos(math.radians(ang))
             cy  = r * math.sin(math.radians(ang))
-            if IS_POLY and any(cx * nx + cy * ny > apo_clip for nx, ny in face_normals):
+            if IS_POLY and any(cx * nx + cy * ny > lim
+                               for (nx, ny), lim in zip(face_normals, apo_clips)):
                 continue
             if FLOOR_SPOKE_COUNT and r > FLOOR_SPOKE_R_IN:
                 m = (ang - FLOOR_SPOKE_OFFSET) % spoke_step
@@ -368,6 +398,20 @@ def _vertical_ribs() -> list[cq.Workplane]:
     poke out at the base or fall short of the wall at the top). Two ribs sit
     behind the handle openings — that's the lift load path."""
     zlo, zhi = RIB_Z_LO, RIB_Z_HI
+    if IS_RECT:
+        # Each rib tracks ITS face (the X and Y faces sit at different distances
+        # and may taper differently).
+        blades = []
+        for a in RIB_ANGLES:
+            pts = [
+                (face_apo_in(a, zlo) - RIB_PROJ, zlo),
+                (face_apo_out(a, zlo) - 0.5,     zlo),
+                (face_apo_out(a, zhi) - 0.5,     zhi),
+                (face_apo_in(a, zhi) - RIB_PROJ, zhi),
+            ]
+            blade = cq.Workplane("XZ").polyline(pts).close().extrude(RIB_W / 2.0, both=True)
+            blades.append(blade.rotate((0, 0, 0), (0, 0, 1), a))
+        return blades
     if not IS_TAPER:
         r_lo  = (APO_IN if IS_POLY else R_IN) - RIB_PROJ
         r_hi  = (APO_OUT if IS_POLY else R_OUT) - 0.5     # inset from the wall so the union doesn't bulge it
@@ -406,6 +450,11 @@ def _floor_ribs() -> cq.Workplane:
         tapered pot the wall also moves out with z."""
         if not IS_POLY:
             return rc_in_at(z)
+        if IS_RECT:
+            hx, hy = rect_half(z)
+            c, s_ = abs(math.cos(math.radians(ang_deg))), abs(math.sin(math.radians(ang_deg)))
+            return min((hx - WALL_T) / c if c > 1e-9 else math.inf,
+                       (hy - WALL_T) / s_ if s_ > 1e-9 else math.inf)
         d = min(_angular_dist_deg(ang_deg, f) for f in FACE_ANGLES)
         return apo_in_at(z) / math.cos(math.radians(d))
 
@@ -470,8 +519,29 @@ def _drain_cutters() -> list[cq.Workplane]:
 
 # ── 7. Drain-hose channel / pipe (optional) ─────────────────────────────────
 
-def _drain_channel_floor_bore_and_pipe() -> tuple[cq.Workplane, cq.Workplane]:
-    """Returns (floor_bore, pipe) for the drain channel:
+def _pipe_envelope() -> cq.Workplane | None:
+    """Solid the drain pipe is clipped to on a ROUND pot: the pot's outer surface
+    pulled in by half a wall. The pipe's gap-filling box is flat on its outward
+    side, so on a small pot its two outer corners poke out through the curved
+    wall; clipped to this, everything the pipe adds ends inside the wall's
+    thickness (so it still merges into the wall, and shares no surface with it).
+    None on a polygon — the wall is flat there and the box sits flush."""
+    if IS_POLY:
+        return None
+    inset = WALL_T / 2.0
+    if IS_TAPER:
+        cone = cq.Solid.makeCone(R_BASE - inset, R_TOP - inset, POT_H,
+                                 pnt=cq.Vector(0, 0, 0), dir=cq.Vector(0, 0, 1))
+        return cq.Workplane("XY").newObject([cone])
+    return cyl(POT_OD - 2.0 * inset, POT_H, z=0.0)
+
+
+def _drain_channel_floor_bore_and_pipe() -> tuple[cq.Workplane, cq.Workplane, cq.Workplane]:
+    """Returns (floor_bore, pipe, bore) for the drain channel:
+      bore       — the pipe's whole hose channel (radius R_CH, floor → rim,
+                   following the pipe's slant) as a cutter: the caller cuts it
+                   AFTER the floor ribs are on, so a ring rib or spoke that
+                   crosses the pipe doesn't stand inside the channel.
       floor_bore — a short vertical cylinder of radius DRAIN_CHANNEL_FLOOR_BORE_R
                    at the groove axis, z ∈ [-overshoot, FLOOR_T + overshoot]:
                    the hole through the floor so the hose can reach the
@@ -512,10 +582,12 @@ def _drain_channel_floor_bore_and_pipe() -> tuple[cq.Workplane, cq.Workplane]:
                 .rect(fill_x_out - fill_x_in, 2.0 * r_ch)
                 .extrude(POT_H))
         bore = cyl(2.0 * r_ch, POT_H + 2.0 * BOOL_OVERSHOOT, z=-BOOL_OVERSHOOT)
-        pipe = (pipe_tube.union(fill, clean=False).cut(bore, clean=False)
-                .translate((R_base, 0.0, 0.0))
-                .rotate((0, 0, 0), (0, 0, 1), a))
-        return floor_bore, pipe
+        place = lambda wp: wp.translate((R_base, 0.0, 0.0)).rotate((0, 0, 0), (0, 0, 1), a)
+        pipe = place(pipe_tube.union(fill, clean=False).cut(bore, clean=False))
+        env = _pipe_envelope()
+        if env is not None:
+            pipe = pipe.intersect(env, clean=False)
+        return floor_bore, pipe, place(bore)
 
     # Tapered wall — oblique tube + oblique fill + oblique bore cut, all
     # following the slanted axis from R_base at the floor to R_top at the rim.
@@ -539,7 +611,10 @@ def _drain_channel_floor_bore_and_pipe() -> tuple[cq.Workplane, cq.Workplane]:
             .union(oblique_fill(0.0, POT_H), clean=False)
             .cut(bore, clean=False))
     pipe = pipe.rotate((0, 0, 0), (0, 0, 1), a)
-    return floor_bore, pipe
+    env = _pipe_envelope()
+    if env is not None:
+        pipe = pipe.intersect(env, clean=False)
+    return floor_bore, pipe, bore.rotate((0, 0, 0), (0, 0, 1), a)
 
 
 def _channel_pipe_slit_cutters() -> list[cq.Workplane]:
@@ -798,8 +873,13 @@ def _build_pot() -> cq.Workplane:
     if DRAIN_CHANNEL:
         # Ribs are already unioned above, so cutting the bore here clears the
         # floor and any rib crossing it; the pipe then merges on top.
-        floor_bore, pipe = _drain_channel_floor_bore_and_pipe()
-        body = _step("drain-merge", lambda: body.cut(floor_bore, clean=False).union(pipe, clean=False))
+        # The hose channel (`bore`) is cut LAST and runs through the floor too,
+        # so it also makes the hole to the reservoir and clears any floor rib
+        # standing in the pipe. (The separate vertical floor bore is NOT cut as
+        # well: it is the same radius at the same spot, and two near-coincident
+        # cylinders leave OCCT an invalid sliver.)
+        _floor_bore, pipe, bore = _drain_channel_floor_bore_and_pipe()
+        body = _step("drain-merge", lambda: body.union(pipe, clean=False).cut(bore, clean=False))
         body = _step("pipe-perf", lambda: _cut_many(body, _channel_pipe_slit_cutters(), label="pipe-perf"))
 
     if DRAINAGE:
@@ -823,16 +903,21 @@ def _build_cone_pot(_step) -> cq.Workplane:
     #    creates tiny face fragments that make OCCT's intersection pathological
     #    (60+ minutes and no progress). We cut the pipe slits AFTER the
     #    intersect instead, as a cheap separate cut.
-    floor_bore = None
     add = _shell()
     if DRAIN_CHANNEL:
-        floor_bore, pipe = _drain_channel_floor_bore_and_pipe()
+        _floor_bore, pipe, pipe_bore = _drain_channel_floor_bore_and_pipe()
         add = add.union(pipe, clean=False)
     def _add_ribs(a):
         if RIB_ANGLES:
             a = a.union(compound(_vertical_ribs()), clean=False)
         if FLOOR_SPOKE_ANGLES or FLOOR_RING_RADII:
             a = a.union(_floor_ribs(), clean=False)
+        if DRAIN_CHANNEL:
+            # Open the hose channel through the floor and any floor rib that
+            # crosses the pipe. Done here, on the un-perforated solid, where it
+            # is cheap; it replaces the old separate floor-bore cut (same radius
+            # at the same spot — cutting both left an invalid sliver).
+            a = a.cut(pipe_bore, clean=False)
         return a
     add = _step("additive (cone+pipe+ribs)", lambda: _add_ribs(add))
 
@@ -851,11 +936,6 @@ def _build_cone_pot(_step) -> cq.Workplane:
     # 4. Perforate the pipe wall (deferred from step 2 — see above).
     if DRAIN_CHANNEL:
         body = _step("pipe-perf", lambda: _cut_many(body, _channel_pipe_slit_cutters(), label="pipe-slits"))
-
-    # 5. Bore the floor LAST — clears the floor, the pipe base and any floor rib
-    #    crossing it (the cut is one small cylinder, so it's cheap even here).
-    if DRAIN_CHANNEL:
-        body = _step("floor-bore", lambda: body.cut(floor_bore, clean=False))
 
     if DRAINAGE:
         body = body.cut(compound(_drain_cutters()))
@@ -887,6 +967,15 @@ def _build_outer_pot() -> cq.Workplane:
     R_in_base  = R_out_base - WALL_T                        # cavity (bore) circumradius
     R_in_top   = R_out_top  - WALL_T
 
+    if IS_RECT:
+        (bx, by), (tx, ty) = rect_half(0.0), rect_half(h_out)
+        print(f"  [outer pot] base {2*(bx+OFFSET):.1f} x {2*(by+OFFSET):.1f} mm, "
+              f"top {2*(tx+OFFSET):.1f} x {2*(ty+OFFSET):.1f} mm, height {h_out:.1f} mm", flush=True)
+        outer = _fillet_vertical_corners(_rect_section(-OFFSET, 0.0, h_out), CORNER_FILLET)
+        bore  = _fillet_vertical_corners(
+            _rect_section(-(OFFSET - WALL_T), FLOOR_T, h_out + BOOL_OVERSHOOT), inner_fillet)
+        return outer.cut(bore, clean=False)
+
     print(f"  [outer pot] OD base {2*R_out_base:.1f} mm, OD top {2*R_out_top:.1f} mm, height {h_out:.1f} mm", flush=True)
 
     if not IS_TAPER:
@@ -911,11 +1000,13 @@ def _build_outer_pot() -> cq.Workplane:
 
 
 # Skip the (slow) build when only the helper functions are wanted (timing / tests).
-# Both inner and outer are built every time — the outer is a few seconds (no
-# perforation), trivial next to the inner build.
+# POT_PART=inner|outer|both picks what gets built (src.build sets it from
+# --part); a pot that isn't built is left as None. Default: the inner pot only.
+_PART = os.environ.get("POT_PART", "inner")
+assert _PART in ("both", "inner", "outer"), f"POT_PART must be both/inner/outer, got {_PART!r}"
 if os.environ.get("POT_NOBUILD") == "1":
     pot = None
     outer_pot = None
 else:
-    pot = _build_pot()
-    outer_pot = _build_outer_pot()
+    pot       = _build_pot() if _PART in ("both", "inner") else None
+    outer_pot = _build_outer_pot() if _PART in ("both", "outer") else None
