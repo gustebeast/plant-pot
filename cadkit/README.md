@@ -46,10 +46,16 @@ cadkit/
   overlap_check.py   parallel interpenetration gate (wrap in tools/check_overlaps.py)
   cq_colors.py       hex / 0..255 / name -> cq.Color, for baking colours into a STEP
   scratch.py         the fast per-part loop: cache the surroundings, rebuild one part
+  lazy.py            lazy(builder): a module's solids built on first use, not on import
+  desktop/           the desktop window's path tracer (Rust), built on first use
   web/               the assembly viewer, a web page: `from cadkit.web import show`
     export.py          parts -> assembly.glb + the kernel's own geometry, for measuring
     view.py            the local server, show(), and the scratch loop's export
+    desktop.py         `py -3.12 -m cadkit.web.desktop`: the same page as a path traced window
     boards.py parts.py real part models on circuit boards
+    finishes.py        what bought parts are made of: steel, brass, rubber...
+    trace.py           the ray traced lighting level: pictures from a background Blender
+    trace_blender.py   ... and the half of it that runs inside Blender
     viewer/index.html  the page (three.js); export(page=True) publishes it with a model
   tools/
     agent_sync.py    dev-only multi-agent git-worktree coordination CLI (run as a script)
@@ -57,7 +63,8 @@ cadkit/
 
 Everything depends only on CadQuery/OCP and the standard library. The viewer needs a
 browser and nothing installed; `show()` never raises, so viewer trouble can't break a
-build.
+build. Its ray traced lighting level alone wants Blender on the machine, and is simply
+not offered without one.
 
 ## Use
 

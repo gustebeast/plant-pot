@@ -10,10 +10,10 @@
     html, body { margin: 0; height: 100%; overflow: hidden; background: #16181c;
                  color: #c9ced6; font: 14px/1.4 system-ui, sans-serif; }
     #view { position: fixed; inset: 0; }
-    .label { position: fixed; left: 16px; top: 14px; opacity: .9; pointer-events: none; }
+    .label { position: fixed; left: 16px; top: calc(14px + var(--tabs, 0px)); opacity: .9; pointer-events: none; }
     .label b { color: #e6eaf0; }
     .label .sub { opacity: .6; font-size: 12px; }
-    #build { position: fixed; right: 16px; top: 14px; opacity: .5; font-variant-numeric: tabular-nums; }
+    #build { position: fixed; right: 16px; top: calc(14px + var(--tabs, 0px)); opacity: .5; font-variant-numeric: tabular-nums; }
     .hint { position: fixed; left: 16px; bottom: 14px; opacity: .5; font-size: 12px; max-width: 46vw; }
     /* control legend / buttons — two rows (5 pedals, 5 knee levers) */
     #controls { position: fixed; right: 16px; bottom: 14px;
@@ -36,14 +36,14 @@
     .pedal .t .na { opacity: .45; font-style: italic; }
     .pedal.on .t { color: #e6eaf0; }
     #deckbtn { min-width: 0; align-self: flex-end; }
-    #fps { position: fixed; right: 16px; top: 34px; opacity: .35; font-size: 11px;
+    #fps { position: fixed; right: 16px; top: calc(34px + var(--tabs, 0px)); opacity: .35; font-size: 11px;
            font-variant-numeric: tabular-nums; text-align: right; }
     #loading { position: fixed; inset: 0; display: grid; place-items: center;
                background: #16181c; transition: opacity .4s; }
 
     /* ── inspection tools: select / hide / measure ─────────────────────────── */
-    #tools { position: fixed; left: 16px; top: 62px; display: flex; flex-direction: column;
-             gap: 8px; align-items: flex-start; max-height: calc(100vh - 150px); }
+    #tools { position: fixed; left: 16px; top: calc(62px + var(--tabs, 0px)); display: flex; flex-direction: column;
+             gap: 8px; align-items: flex-start; max-height: calc(100vh - 150px - var(--tabs, 0px)); }
     .bar { display: flex; gap: 6px; flex-wrap: wrap; }
     .btn { padding: 4px 9px; border: 1px solid #333842; border-radius: 7px; background: #1c1f25;
            cursor: pointer; user-select: none; font-size: 12px; color: #c9ced6; }
@@ -81,8 +81,48 @@
                 background: rgba(18, 20, 24, .9); border: 1px solid #6b5a1e; color: #ffe08a;
                 padding: 1px 6px; border-radius: 5px; font-size: 13px;
                 font-variant-numeric: tabular-nums; display: none; }
-    #status { position: fixed; right: 16px; top: 52px; font-size: 11px; opacity: .55;
+    #status { position: fixed; right: 16px; top: calc(52px + var(--tabs, 0px)); font-size: 11px; opacity: .55;
+              max-width: 44vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
               pointer-events: none; text-align: right; }
+
+    /* ── tabs: one project each, on cadkit's local server only (see TABS in the script).
+       The desktop app's strip (cadkit/desktop/src/tabs.html) is dressed the same. ── */
+    #tabstrip, #projects { display: none; }
+    body.tabs { --tabs: 34px; }
+    body.tabs #tabstrip { position: fixed; left: 0; right: 0; top: 0; height: 34px; z-index: 60;
+             box-sizing: border-box; display: flex; align-items: stretch; background: #101216;
+             border-bottom: 1px solid #2a2e36; padding: 0 4px; user-select: none; }
+    .tab { display: flex; align-items: center; gap: 7px; min-width: 60px; max-width: 240px;
+           padding: 0 6px 0 12px; margin-top: 4px; border: 1px solid transparent; border-bottom: 0;
+           border-radius: 8px 8px 0 0; cursor: pointer; opacity: .62; font-size: 13px; }
+    .tab:hover { opacity: .9; background: #1c1f25; }
+    .tab.drag { opacity: 1; background: #1c1f25; border-color: #4d84b8; cursor: grabbing; }
+    .tab.on { opacity: 1; background: #16181c; border-color: #333842; color: #e6eaf0;
+              box-shadow: 0 1px 0 #16181c; }
+    .tab .name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .tab .dot { width: 7px; height: 7px; border-radius: 50%; background: #4d84b8; flex: none; display: none; }
+    .tab.new .dot { display: block; }
+    .tab .x { flex: none; width: 18px; height: 18px; line-height: 17px; text-align: center;
+              border-radius: 5px; opacity: .5; font-size: 14px; }
+    .tab .x:hover { opacity: 1; background: #333842; }
+    #tabplus { align-self: center; width: 26px; height: 24px; line-height: 22px; margin-left: 4px;
+               text-align: center; border-radius: 6px; cursor: pointer; opacity: .6; font-size: 17px; }
+    #tabplus:hover, #tabplus.on { opacity: 1; background: #23405a; }
+    body.tabs.list #projects { display: block; position: fixed; inset: 34px 0 0 0; z-index: 59;
+             overflow-y: auto; padding: 22px 28px 28px; background: #16181c; }
+    #projects h1 { font-size: 15px; font-weight: 600; color: #e6eaf0; margin: 0 0 4px; }
+    #projects .sub { opacity: .55; font-size: 12px; margin-bottom: 16px; }
+    .proj { display: flex; align-items: baseline; gap: 14px; max-width: 980px; padding: 9px 12px;
+            border: 1px solid #333842; border-radius: 8px; background: #1c1f25; margin-bottom: 6px;
+            cursor: pointer; }
+    .proj:hover { border-color: #4d84b8; }
+    .proj b { color: #e6eaf0; font-weight: 600; white-space: nowrap; }
+    .proj .dir { flex: 1; min-width: 0; opacity: .5; font-size: 12px; overflow: hidden; white-space: nowrap;
+                 text-overflow: ellipsis; direction: rtl; text-align: left; }
+    .proj .when { opacity: .7; font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .proj .is { font-size: 11px; opacity: .6; text-transform: uppercase; letter-spacing: .06em; }
+    .proj.missing { opacity: .4; cursor: default; }
+    .proj.missing:hover { border-color: #333842; }
   </style>
   <script type="importmap">
   { "imports": {
@@ -94,6 +134,8 @@
 </head>
 <body>
   <div id="view"></div>
+  <div id="tabstrip"></div>
+  <div id="projects"><h1>Projects</h1><div class="sub">every project shown on this machine, the one built last first</div><div id="projrows"></div></div>
   <div class="label"><b id="title">Assembly</b>
     <div class="sub"><span id="subtitle"></span><span id="keys"></span><span id="deckhint"><b>space</b> = <span id="deckstate">hide deck</span> (and what comes off with it)</span></div>
   </div>
@@ -107,7 +149,6 @@
       <div class="btn" id="bParts">parts<span class="k">p</span></div>
       <div class="btn" id="bSection">section<span class="k">c</span></div>
       <div class="btn" id="bLight">light<span class="k">l</span></div>
-      <div class="btn" id="bPrinted">as printed<span class="k">k</span></div>
       <div class="btn" id="bShowAll" style="display:none">show all<span class="k">u</span></div>
     </div>
     <div class="bar" id="views">
@@ -149,6 +190,7 @@
   import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
   import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
   import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+  import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
   import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 
   THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
@@ -159,8 +201,22 @@
   const view = document.getElementById('view');
   const $ = id => document.getElementById(id);
 
+  // ── INSIDE THE DESKTOP SHELL THE PICTURE IS NOT THIS PAGE'S ──────────────────────
+  // The shell (cadkit-rt desk) lays this page, see-through, over a path tracer of its
+  // own, and sets window.cadkitNative before any of this runs. The page is then still
+  // the whole of the UI: it loads the model, picks and measures on it as ever, and says
+  // what the picture is of (nativeState). But it DRAWS NO MODEL: its canvas is clear but
+  // for its own marks, the selection tint and the measure marks. In a browser NATIVE is
+  // false and nothing here is any different.
+  const NATIVE = !!(window.cadkitNative && window.ipc);
+  // The page of ONE PROJECT AMONG SEVERAL on cadkit's local server (see TABS, below) is at
+  // <server>/p/<key>/. Anywhere else (a published folder, the desktop app) TABKEY is null.
+  const TABAT = !NATIVE && new URLSearchParams(location.search).get('tabs') !== '0' &&
+                location.pathname.match(/^(.*\/)p\/([^/]+)\/(?:index\.html)?$/);
+  const TABBASE = TABAT ? TABAT[1] : null, TABKEY = TABAT ? decodeURIComponent(TABAT[2]) : null;
+
   // ── renderer / scene / camera ────────────────────────────────────────────
-  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: NATIVE });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.setSize(innerWidth, innerHeight);
   // no tone curve: the part colours are display colours already, and a filmic curve
@@ -170,6 +226,11 @@
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x16181c);
+  const BACKDROP = scene.background;
+  if (NATIVE) {                                        // nothing of the page behind the model
+    scene.background = null; renderer.setClearColor(0x000000, 0);
+    document.documentElement.style.background = document.body.style.background = 'transparent';
+  }
   const pmrem = new THREE.PMREMGenerator(renderer);
   scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 
@@ -420,15 +481,20 @@
   // own node.
   const M = { root: null, parts: null, list: [], byName: new Map(), batches: [], pickables: [],
               key: '', geo: null, geoPromise: null };
+  // WHAT A PART IS MADE OF. A printed part names its filament and comes in that
+  // filament's colour; a bought one names its finish (steel, brass, rubber...) and keeps
+  // its own. Either gives the surface (cadkit/web/finishes.py: the table comes in the
+  // model file). A metal is lit mostly by what it reflects, so it takes the room at
+  // full strength; a plastic takes what its table entry says, or a little of it.
   const matCache = new Map();
-  function partMaterial(src) {
-    const c = src.color, a = src.opacity ?? 1;
-    const key = c.getHexString() + ':' + a.toFixed(3);
+  function partMaterial(src, finish) {
+    const c = src.color, a = src.opacity ?? 1, [metal, rough, room] = finish || [0, 0.65];
+    const key = c.getHexString() + ':' + a.toFixed(3) + ':' + metal + ':' + rough + ':' + room;
     if (!matCache.has(key))
       matCache.set(key, new THREE.MeshStandardMaterial({
-        color: c.clone(), metalness: 0, roughness: 0.65, side: THREE.DoubleSide, clipShadows: true,
-        envMapIntensity: ENV,
-        transparent: a < 0.999, opacity: a }));
+        color: c.clone(), metalness: metal, roughness: rough, side: THREE.DoubleSide, clipShadows: true,
+        envMapIntensity: room ?? (metal ? 1.0 : finish ? 0.6 : ENV),
+        transparent: a < 0.999, opacity: a, depthWrite: a >= 0.999 }));
     return matCache.get(key);
   }
   // a board's real components are meshes of their own, named <board part>__<ref>, but a
@@ -437,32 +503,28 @@
   const unitOf = n => n.split('__')[0];
   const family = n => unitOf(n).replace(/(_\d+)+$/, '');
   // a part of many colours (a component model) carries them per vertex, under one white material
-  const vcMat = new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, metalness: 0.1,
+  const vcMat = new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, metalness: 0,
                                                  roughness: 0.6, side: THREE.DoubleSide, clipShadows: true,
-                                                 envMapIntensity: ENV });
-
-  // ── as printed ───────────────────────────────────────────────────────────────────
-  // The build colours every part differently so they can be told apart. This view
-  // shows the instrument as it comes off the printer instead: every part of one
-  // filament in that filament's colour AND finish. Glass-filled PETG is matte (the
-  // fibre breaks up the surface, so it barely reflects); PCTG is a glossy plastic and
-  // picks up the room; TPU is dull rubber. Bought parts keep their colours.
-  const PRINT = {
-    'petg-gf': new THREE.MeshStandardMaterial({ color: 0x17181a, metalness: 0, roughness: 0.92,
-      side: THREE.DoubleSide, clipShadows: true, envMapIntensity: 0.25 }),
-    'pctg': new THREE.MeshStandardMaterial({ color: 0x14401f, metalness: 0, roughness: 0.22,
-      side: THREE.DoubleSide, clipShadows: true, envMapIntensity: 1.0 }),
-    // the deck's second colour (its fret lines and markers): not chosen yet, so a pale one
-    'pctg-alt': new THREE.MeshStandardMaterial({ color: 0xd9d6c8, metalness: 0, roughness: 0.22,
-      side: THREE.DoubleSide, clipShadows: true, envMapIntensity: 1.0 }),
-    'tpu': new THREE.MeshStandardMaterial({ color: 0x101011, metalness: 0, roughness: 1.0,
-      side: THREE.DoubleSide, clipShadows: true, envMapIntensity: 0.15 }),
+                                                 envMapIntensity: 0.8 });
+  // ...and its METAL in the colour's alpha (0 = a lead, a shell, a contact): the model
+  // is opaque, so the export uses the spare channel to say which faces are metal
+  vcMat.onBeforeCompile = sh => {
+    sh.fragmentShader = sh.fragmentShader.replace('#include <metalnessmap_fragment>',
+      `#include <metalnessmap_fragment>
+       #ifdef USE_COLOR_ALPHA
+         metalnessFactor = 1.0 - vColor.a;
+         roughnessFactor = mix(0.3, roughnessFactor, vColor.a);
+       #endif`);
   };
-  let asPrinted = false;
-  try { asPrinted = sessionStorage.getItem('as-printed') === '1'; } catch {}
 
+  // A FILAMENT NAMED ...-clear IS SEEN THROUGH: a clear part drawn solid hides what the
+  // real one shows (the deck's base is clear so the fret lights shine up through it).
+  const CLEAR = 0.38;
+
+  let FINISH = {};
   function buildModel(gltf) {
     const root = gltf.scene;
+    FINISH = (gltf.asset && gltf.asset.extras && gltf.asset.extras.finishes) || {};
     let parts = root;
     while (parts.children.length === 1 && !parts.children[0].isMesh) parts = parts.children[0];
     M.root = root; M.parts = parts;
@@ -473,8 +535,9 @@
     for (const mesh of [...parts.children]) {
       if (!mesh.isMesh) continue;
       const g = mesh.geometry, col = g.attributes.color ? g.attributes.color.array : null;
-      const printed = asPrinted && !col && PRINT[mesh.userData.mat];
-      const mat = col ? vcMat : printed || partMaterial(mesh.material);
+      const clear = /-clear$/.test(mesh.userData.mat || '');
+      const mat = col ? vcMat : partMaterial(
+        clear ? { color: mesh.material.color, opacity: CLEAR } : mesh.material, FINISH[mesh.userData.mat]);
       const unit = mesh.userData.unit || unitOf(mesh.name);      // a board's lettering names its board
       const p = { name: mesh.name, unit, family: family(unit), mat, hidden: false, col,
                   pos: g.attributes.position.array, idx: g.index.array,
@@ -487,7 +550,7 @@
         g.computeVertexNormals();
         g.computeBoundsTree({ indirect: true });
         mesh.material = mat; mesh.userData.part = p;
-        mesh.castShadow = mesh.receiveShadow = true;
+        mesh.castShadow = !mat.transparent; mesh.receiveShadow = true;
         p.mesh = mesh; nodes[p.name] = mesh;
         M.pickables.push(mesh);
       } else {
@@ -520,7 +583,7 @@
       drawGeo.setIndex(new THREE.BufferAttribute(full.slice(), 1));
       drawGeo.boundingSphere = null; drawGeo.computeBoundingSphere();
       const draw = new THREE.Mesh(drawGeo, mat);
-      draw.castShadow = draw.receiveShadow = true;
+      draw.castShadow = !mat.transparent; draw.receiveShadow = true;    // light goes through a clear part
       const pick = new THREE.Mesh(pickGeo, mat);
       pick.visible = false;                     // raycast only: the ray does not test visibility
       const b = { mat, parts: ps, full, draw, pick, drawGeo, pickGeo,
@@ -537,7 +600,7 @@
   }
   function disposeModel() {
     if (!M.root) return;
-    clearSelection(); clearMeasure();
+    clearSelection(); clearMeasure(); rtDrop(); M.span = 0;
     scene.remove(M.root);
     for (const b of M.batches) { b.pickGeo.disposeBoundsTree(); b.pickGeo.dispose(); b.drawGeo.dispose(); }
     for (const p of M.list) if (p.mesh) { p.mesh.geometry.disposeBoundsTree(); p.mesh.geometry.dispose(); }
@@ -625,6 +688,29 @@
     }
     return null;
   }
+
+  // ── zooming and panning at the pace of what is under the cursor ──────────────────
+  // The controls zoom by a share of the distance to their TARGET and pan in proportion
+  // to it. Zoom far in and the camera is almost on the target: each notch then moves a
+  // share of almost nothing, and the view crawls. So before a zoom or a drag the target
+  // is slid along the line of sight (which changes nothing on screen) to the depth of
+  // the part under the cursor. Over empty space there is no such depth, and the target
+  // is only kept from closing on the camera: never nearer than a share of the model's
+  // own size, which is the pace of flying through it.
+  function retarget(e, always) {
+    const hit = pickAt(e.clientX, e.clientY);
+    const dir = camera.getWorldDirection(new THREE.Vector3());
+    const now = controls.target.clone().sub(camera.position).dot(dir);
+    let depth = hit ? hit.world.sub(camera.position).dot(dir) : now;
+    if (!hit) {
+      if (!M.span) M.span = new THREE.Box3().setFromObject(M.parts).getSize(new THREE.Vector3()).length();
+      depth = Math.max(now, 0.1 * M.span);
+      if (depth === now) return;
+    } else if (depth <= camera.near || (!always && depth < 2 * now && depth > 0.5 * now)) return;
+    controls.target.copy(camera.position).addScaledVector(dir, depth);
+  }
+  renderer.domElement.addEventListener('wheel', e => retarget(e, true), { capture: true, passive: true });
+  renderer.domElement.addEventListener('pointerdown', e => retarget(e, false), { capture: true });
 
   // ── selection ────────────────────────────────────────────────────────────────────
   let selection = [];
@@ -1075,7 +1161,8 @@
   function setHint() {
     $('hint').textContent = mode === 'measure'
       ? 'measure: click a corner, edge or face, then another · esc clears · m leaves · drag still orbits'
-      : 'drag orbit · scroll zoom · right-drag pan · click a part to select it (shift adds) · x hide · i isolate · z zoom · u show all · ctrl+z / ctrl+y undo, redo · p parts list · m measure · c section · l lighting · k as printed';
+      : 'drag orbit · scroll zoom · right-drag pan · click a part to select it (shift adds) · x hide · i isolate · z zoom · u show all · ctrl+z / ctrl+y undo, redo · p parts list · m measure · c section' +
+        (NATIVE ? '' : ' · l lighting');                 // the shell's picture has the one level
   }
 
   // ── pointer and keys ─────────────────────────────────────────────────────────────
@@ -1112,8 +1199,7 @@
       case 'z': selAction('zoom'); return;
       case 'u': showAll(); return;
       case 'c': $('bSection').onclick(); return;
-      case 'l': setQuality(quality - 1, true); return;
-      case 'k': setPrinted(!asPrinted); return;
+      case 'l': setQuality(quality + 1, true); return;
     }
     const p = keyToPedal[e.key]; if (!p || e.repeat) return;
     held.add(p); syncUI();
@@ -1185,16 +1271,18 @@
   // the deck lets light into the mechanism and an isolated part gets the whole map to
   // itself. Occlusion is screen-space, so it follows by nature. Both cost frame time,
   // and the page gives them up, one level at a time, if it cannot hold 60 fps.
-  const LIGHT = ['plain', 'shadows', 'shadows + occlusion'];
+  const LIGHT = ['plain', 'shadows', 'shadows + occlusion', 'ray traced'];
   let quality = 2, autoQuality = true, composer = null, gtao = null;
-  let lightDirty = true, lastSig = 0, slowFor = 0, settledAt = Infinity;
+  let lightDirty = true, lastSig = 0, slowFor = 0, settledAt = Infinity, traced = false;
   function setQuality(q, manual = false) {
+    if (NATIVE) q = 0;                                           // the shell's picture is the one level there
     quality = (q + LIGHT.length) % LIGHT.length;
+    if (quality === 3 && !rt.ok) quality = manual ? 0 : 2;       // no tracer behind this page
     if (manual) autoQuality = false;
     const sh = quality >= 1;
     if (renderer.shadowMap.enabled !== sh) {
       renderer.shadowMap.enabled = sh; key.castShadow = sh;
-      for (const m of [...matCache.values(), vcMat, ...Object.values(PRINT)]) m.needsUpdate = true;
+      for (const m of [...matCache.values(), vcMat]) m.needsUpdate = true;
     }
     if (quality >= 2 && !composer) {
       const pr = renderer.getPixelRatio();
@@ -1214,7 +1302,163 @@
       composer.addPass(new OutputPass());
     }
     lightDirty = true; slowFor = 0;
+    if (quality === 3) fetchJSON('trace.json?warm=1');           // have it ready
+    else { rtDrop(); traced = false; }                           // a traced picture belongs to its level
+    fpsLine();                                                   // said now, not at the next second
     $('bLight').title = 'lighting: ' + LIGHT[quality] + (autoQuality ? ' (drops by itself under 60 fps)' : '');
+  }
+
+  // ── ray tracing ──────────────────────────────────────────────────────────────────
+  // The top level, and never chosen for you. THE DRAWN PICTURE STAYS ON SCREEN, quick
+  // and live, exactly as 'shadows + occlusion' draws it (user, 2026-10-09). When the
+  // view has come to rest, ONE ray traced picture of exactly what is shown is swapped
+  // in: light that bounces between parts, soft shadows, reflections of the model in its
+  // own glossy parts. Any movement puts the drawn picture straight back.
+  //
+  // THE PAGE DOES NOT TRACE IT. A browser cannot reach a card's ray-tracing hardware,
+  // and a tracer written in a shader took seconds a picture. The server this page
+  // comes from keeps a renderer that can (cadkit/web/trace.py) with the model loaded;
+  // the page sends what it shows, camera, hidden parts, the rig's pose, and gets a
+  // picture back in a fraction of a second. So the level exists only on a page served
+  // from the machine that built the model, and only if that machine has the renderer:
+  // a published page does not offer it. It traces what is SHOWN, not a section cut:
+  // with a cut on, the page stays with the drawn picture.
+  // TWO PICTURES A VIEW: a quick one, few samples at two thirds of the size, denoised,
+  // which is nearly the finished thing and is there in a quarter of a second; then the
+  // full one over it. (A view crowded with small parts costs several times an open one
+  // per sample: every ray there bounces.)
+  //
+  // WHILE A PICTURE IS BEING TRACED THE PAGE STOPS DRAWING. The drawn picture is already
+  // on screen and nothing in it is changing; redrawing it hundreds of times a second
+  // takes the very card the tracer is waiting for, and doubled the wait.
+  const RT_FIRST = 12, RT_FIRST_SCALE = 2 / 3, RT_SAMPLES = 96;
+  let woke = 3;                                    // frames still owed to something the user did
+  for (const ev of ['pointermove', 'pointerdown', 'pointerup', 'wheel', 'keydown', 'keyup', 'resize'])
+    addEventListener(ev, () => { woke = 3; }, { capture: true, passive: true });
+  const rt = { ok: null, cam: new THREE.Matrix4(), size: '', want: 0, shown: false,
+               asking: 0, ms: 0, n: 0, quad: null, error: '', prev: new THREE.Matrix4(), goal: null, asked: -1, far: 1, idle: false, rest: 0, fresh: 0 };
+  async function rtLoad() {                        // is there a tracer behind this page?
+    if (rt.ok !== null) return;
+    const r = await fetchJSON('trace.json?t=' + Date.now());
+    rt.ok = !!(r && r.available);
+  }
+  function rtDrop() { rt.want++; rt.shown = false; rt.goal = null; }
+  async function rtAsk(samples = RT_FIRST) {
+    const want = rt.want, poses = {};
+    const pr = renderer.getPixelRatio() * (samples < RT_SAMPLES ? RT_FIRST_SCALE : 1);
+    for (const n in nodes) poses[n] = nodes[n].matrixWorld.toArray();
+    const view = { w: Math.round(innerWidth * pr), h: Math.round(innerHeight * pr), samples,
+                   cam: rt.cam.toArray(), fov: camera.fov, near: camera.near, far: camera.far,
+                   hidden: M.list.filter(p => p.hidden).map(p => p.name), poses,
+                   sun: KEY_DIR.toArray(), sun_strength: key.intensity,
+                   bg: scene.background.clone().convertLinearToSRGB().toArray() };
+    const t0 = performance.now();
+    rt.asking++; fpsLine();
+    try {
+      const r = await fetch('trace', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                       body: JSON.stringify(view) });
+      if (r.status === 200) {
+        const bmp = await createImageBitmap(await r.blob(), { imageOrientation: 'flipY' });
+        if (want !== rt.want) bmp.close();           // the view moved on meanwhile
+        else {
+          if (!rt.quad) rt.quad = new FullScreenQuad(new THREE.MeshBasicMaterial(
+            { toneMapped: false, depthTest: false, depthWrite: false }));
+          const m = rt.quad.material;
+          if (m.map) { m.map.image.close(); m.map.dispose(); }
+          m.map = new THREE.Texture(bmp);
+          m.map.colorSpace = THREE.SRGBColorSpace; m.map.generateMipmaps = false;
+          m.map.minFilter = m.map.magFilter = THREE.LinearFilter;
+          m.map.needsUpdate = true; m.needsUpdate = true;
+          rt.shown = true; rt.ms = performance.now() - t0; rt.n = samples; rt.error = ''; rt.fresh = 3;
+          if (samples < RT_SAMPLES) rtAsk(RT_SAMPLES);
+        }
+      } else if (r.status !== 204) { rt.error = r.statusText || 'failed'; console.warn('ray tracing:', rt.error); }
+    } catch (e) { rt.error = 'failed'; console.warn(e); }
+    rt.asking--; fpsLine();
+  }
+  // THE VIEW GLIDES TO A STOP after a drag, ever more slowly, and takes a second or two
+  // to stand exactly still, long after the eye has it as stopped. Waiting for that is
+  // waiting for nothing (user, 2026-10-09: err on the side of speed; a picture the view
+  // has left is simply dropped). So as soon as the glide is slow, WHERE IT WILL END is
+  // worked out, the picture is asked for THERE at once, and the glide is finished by
+  // this code, quickly, while the picture is on its way.
+  const RT_SLOW = 1e-2;                            // a frame's movement, as a share of the view
+  function rtSame(a, b, tol = 1e-6) {
+    const x = a.elements, y = b.elements;
+    for (let i = 0; i < 15; i++) if (Math.abs(x[i] - y[i]) > (i < 12 ? tol : tol * rt.far)) return false;
+    return true;
+  }
+  // the pose a picture should be of, or null while the view is really moving
+  function rtPose() {
+    const g = rt.goal;
+    rt.far = camera.position.distanceTo(controls.target) || 1;
+    if (g) {
+      if (down || camera.position.distanceTo(g.at) > 1e-6 * rt.far) rt.goal = null;   // taken back in hand
+      else {
+        camera.position.lerp(g.pos, 0.35); controls.target.lerp(g.tgt, 0.35);
+        if (camera.position.distanceTo(g.pos) < 1e-4 * rt.far) {
+          camera.position.copy(g.pos); controls.target.copy(g.tgt); rt.goal = null;
+          controls.update(); camera.updateMatrixWorld();
+          rt.prev.copy(camera.matrixWorld);
+          return camera.matrixWorld;                                   // arrived: g.mat, to rounding
+        }
+        camera.lookAt(controls.target); camera.updateMatrixWorld();
+        g.at.copy(camera.position); rt.prev.copy(camera.matrixWorld);
+        return g.mat;
+      }
+    }
+    const a = camera.matrixWorld.elements, p = rt.prev.elements;
+    let m = 0;
+    for (let i = 0; i < 15; i++) m = Math.max(m, Math.abs(a[i] - p[i]) / (i < 12 ? 1 : rt.far));
+    rt.prev.copy(camera.matrixWorld);
+    if (m < 1e-7) return camera.matrixWorld;                 // still, to rounding
+    if (down || m >= RT_SLOW) return null;
+    // the end of the glide: what the controls would do with the rest of it in one step
+    const at = camera.position.clone(), tgt = controls.target.clone();
+    controls.enableDamping = false; controls.update(); controls.enableDamping = true;
+    camera.updateMatrixWorld();
+    rt.goal = { pos: camera.position.clone(), tgt: controls.target.clone(), mat: camera.matrixWorld.clone(), at };
+    camera.position.copy(at); controls.target.copy(tgt);
+    camera.lookAt(tgt); camera.updateMatrixWorld();
+    rt.prev.copy(camera.matrixWorld);
+    return rt.goal.mat;
+  }
+  // true when this frame shows the traced picture (so the drawn one must NOT be drawn over it)
+  function rtFrame(changed) {
+    rt.idle = false;
+    if (quality !== 3 || !rt.ok || sec.on || !M.parts) return false;
+    const pose = rtPose(), size = innerWidth + 'x' + innerHeight;
+    if (changed || !pose || size !== rt.size || !rtSame(pose, rt.cam)) {
+      const was = rt.shown;
+      rt.shown = false; rt.want++; rt.size = size; rt.rest = 0;
+      if (pose) rt.cam.copy(pose); else rt.cam.identity();
+      if (was) fpsLine();
+    }
+    // asked for as soon as there is a pose and nothing else is changing (the rig eases)
+    if (pose && !changed && rt.asked !== rt.want) { rt.asked = rt.want; rtAsk(); }
+    const quiet = !changed && woke <= 0;
+    if (!rt.shown || rt.goal || !rtSame(camera.matrixWorld, rt.cam)) {
+      // at rest, the drawn picture up, a traced one on its way: leave the card to it
+      rt.idle = quiet && !rt.goal && !!pose && rt.asking > 0 && ++rt.rest > 3;
+      return false;
+    }
+    if (quiet && rt.fresh <= 0) return true;                 // it is on screen already
+    rt.fresh--;
+    rt.quad.render(renderer);
+    rtOverlays();
+    return true;
+  }
+  // the selection tint and the measure marks, over the traced picture
+  function rtOverlays() {
+    const off = [];
+    for (const b of M.batches) if (b.draw.visible) { b.draw.visible = false; off.push(b.draw); }
+    for (const p of M.list) if (p.mesh && p.mesh.visible) { p.mesh.visible = false; off.push(p.mesh); }
+    const bg = scene.background, ac = renderer.autoClear;
+    scene.background = null; renderer.autoClear = false;
+    renderer.clearDepth();
+    renderer.render(scene, camera);
+    scene.background = bg; renderer.autoClear = ac;
+    for (const o of off) o.visible = true;
   }
   function fitShadow() {
     const box = new THREE.Box3();
@@ -1233,33 +1477,140 @@
   function rigSignature() {
     let s = 0;
     for (const n in nodes) { const e = nodes[n].matrix.elements; s += e[0] + 1.7 * e[5] + e[12] + 1.3 * e[13] + 1.9 * e[14]; }
-    return s;
+    // to a tenth of a micron: the rig EASES to rest, and its last digits go on settling
+    // for seconds after anything that could be seen has stopped
+    return Math.round(s * 1e4);
+  }
+  // ── what the shell is told, and the marks drawn over its picture ─────────────────
+  // Everything that defines the picture goes to the shell in ONE message a frame, and
+  // only what has changed since the last: the camera as the tracer's server takes it
+  // (matrixWorld, fov, near, far) with the size this page projects onto, in device
+  // pixels; the hidden parts and the selected ones, by name; the pose of each part the
+  // rig has moved; the section plane in the CAD frame ([nx, ny, nz, c], kept where
+  // n·p + c >= 0), or null; the sun and the backdrop; and `glb`, the model file, each
+  // time one has been loaded (the shell fetches the same file).
+  const nat = { all: true, glb: '', cam: [], hidden: '', sel: null, clip: '', pose: {}, quiet: 0, env: null,
+                marks: '', blank: false, line: '', short: '', depth: null, tmp: new THREE.Matrix4(),
+                stats(s) { nat.short = s.spp + ' samples';
+                           nat.line = 'path traced · ' + s.state + ' · ' + nat.short +
+                                      (s.gpu_ms ? ' · ' + s.gpu_ms.toFixed(1) + ' ms a frame' : ''); fpsLine(); } };
+  // The shell's status line stands where the frame rate does and is longer. In a window
+  // too narrow for it beside the title's lines it is said shorter, and not at all rather
+  // than over them.
+  function nativeLine() {
+    const title = document.createRange();
+    title.selectNodeContents(document.querySelector('.label'));
+    for (const text of [nat.line, nat.short, '']) {
+      fpsEl.textContent = text;
+      const f = fpsEl.getBoundingClientRect();
+      if (![...title.getClientRects()].some(r => r.width && r.right > f.left - 8 && r.left < f.right &&
+                                                 r.bottom > f.top && r.top < f.bottom)) break;
+    }
+  }
+  function nativeState() {
+    const m = {}, all = nat.all, dpr = devicePixelRatio;
+    nat.all = false;
+    // the glide after a drag ends in movements no pixel shows: those are not sent
+    const far = camera.position.distanceTo(controls.target) || 1;
+    const cam = [...camera.matrixWorld.elements, camera.fov, camera.near, camera.far, innerWidth * dpr, innerHeight * dpr];
+    if (all || cam.some((x, i) => Math.abs(x - nat.cam[i]) > (i > 11 && i < 15 ? 1e-6 * far : 1e-7))) {
+      nat.cam = cam;
+      m.cam = cam.slice(0, 16); [m.fov, m.near, m.far, m.w, m.h] = cam.slice(16);
+    }
+    if (all || lightDirty) {                             // something shown, hidden or cut
+      const hidden = M.list.filter(p => p.hidden).map(p => p.name), names = hidden.join('|');
+      if (all || names !== nat.hidden) { nat.hidden = names; m.hidden = hidden; }
+      const clip = sec.on ? [0, 0, 0, sec.flip ? -sec.v : sec.v] : null;
+      if (clip) clip[sec.axis] = sec.flip ? 1 : -1;
+      if (all || JSON.stringify(clip) !== nat.clip) { nat.clip = JSON.stringify(clip); m.clip = clip; }
+      lightDirty = false;
+    }
+    if (all || selOverlays !== nat.sel) { nat.sel = selOverlays; m.sel = selection.map(p => p.name); }
+    // THE RIG EASES TOWARDS ITS POSE FOR OVER A SECOND AFTER ANYTHING CAN BE SEEN TO MOVE,
+    // and every pose sent starts the picture again. So a part is sent while it moves by
+    // something a pixel could show (a hundredth of a millimetre at arm's length, scaled
+    // with the view), and once more, exactly, when the rig has gone quiet.
+    if (all) nat.pose = {};
+    const tol = Math.max(0.01, 2e-5 * far), exact = nat.quiet === 3;
+    let moved = false, owed = false;
+    for (const n in nodes) {
+      const e = nodes[n].matrix.elements, was = nat.pose[n];
+      if (was) {
+        let d = 0, turn = 0;
+        for (let i = 0; i < 12; i++) if (i % 4 !== 3) turn = Math.max(turn, Math.abs(e[i] - was[i]));
+        for (let i = 12; i < 15; i++) d = Math.max(d, Math.abs(e[i] - was[i]));
+        if (d <= tol && turn <= 1e-4) {
+          if (!exact) { owed = owed || d > 0 || turn > 0; continue; }
+        } else moved = true;
+      }
+      nat.pose[n] = e.slice();
+      (m.poses || (m.poses = {}))[n] = nat.tmp.multiplyMatrices(M.parts.matrixWorld, nodes[n].matrix).toArray();
+    }
+    // quiet counts the frames since anything moved visibly: the exact poses go on the
+    // third, once, and what the rig still creeps by after that is never sent
+    nat.quiet = moved ? 0 : owed || nat.quiet ? nat.quiet + 1 : 0;
+    if (all) {
+      nat.env = { sun: KEY_DIR.toArray(), sun_strength: key.intensity,
+                  bg: BACKDROP.clone().convertLinearToSRGB().toArray() };
+      Object.assign(m, nat.env, { glb: nat.glb });
+    }
+    for (const k in m) { m.t = 'view'; window.ipc.postMessage(JSON.stringify(m)); keptAt = 1; return true; }
+    if (keptAt === 1) keptAt = performance.now() + 400;          // the view has stopped changing:
+    else if (keptAt > 1 && performance.now() > keptAt) { keptAt = 0; if (restored) keepState(); }   // keep it, once
+    return false;
+  }
+  // The marks alone are drawn, and only when they or what they lie on have changed. The
+  // model goes into the depth buffer first and nowhere else, so that a mark is hidden
+  // by what stands in front of it exactly as it is in the browser (a clear part hides
+  // nothing there either).
+  function nativeFrame() {
+    if (!M.parts) return;
+    const sent = nativeState();
+    const marks = [...selOverlays, meas.objs.A, meas.objs.B, meas.objs.hover, meas.objs.dim].filter(Boolean);
+    const sig = marks.map(o => o.id).join();
+    if (!marks.length && nat.blank) return;
+    if (!sent && sig === nat.marks) return;
+    nat.marks = sig; nat.blank = !marks.length;
+    if (nat.blank) { renderer.clear(); return; }
+    if (!nat.depth) nat.depth = new THREE.MeshBasicMaterial({ colorWrite: false, side: THREE.DoubleSide });
+    const model = [];
+    for (const b of M.batches) if (b.draw.visible) model.push(b.draw);
+    for (const p of M.list) if (p.mesh && p.mesh.visible) model.push(p.mesh);
+    for (const o of marks) o.visible = false;
+    for (const o of model) if (o.material.transparent) o.visible = false;
+    scene.overrideMaterial = nat.depth;
+    renderer.render(scene, camera);
+    scene.overrideMaterial = null;
+    for (const o of marks) o.visible = true;
+    for (const o of model) o.visible = false;
+    const ac = renderer.autoClear;
+    renderer.autoClear = false;
+    renderer.render(scene, camera);
+    renderer.autoClear = ac;
+    for (const o of model) o.visible = true;
   }
   function drawFrame() {
+    if (NATIVE) return nativeFrame();
+    let changed = false;
     if (quality >= 1 && M.parts) {
       const sig = rigSignature();
+      changed = lightDirty || sig !== lastSig;
       if (lightDirty) fitShadow();
-      if (lightDirty || sig !== lastSig) renderer.shadowMap.needsUpdate = true;
+      if (changed) renderer.shadowMap.needsUpdate = true;
       lastSig = sig; lightDirty = false;
     }
+    traced = rtFrame(changed);
+    if (woke > 0) woke--;
+    if (traced || rt.idle) return;
     if (quality >= 2) composer.render(); else renderer.render(scene, camera);
   }
   // called once a second with the measured rate
   function govern(fps, now) {
     if (!autoQuality || quality === 0 || document.hidden || now < settledAt) { slowFor = 0; return; }
     if (fps >= 57) { slowFor = 0; return; }
-    if (++slowFor >= 2) setQuality(quality - 1);
+    if (++slowFor >= 2) setQuality(Math.min(quality, 3) - 1);
   }
-  $('bLight').onclick = () => setQuality(quality - 1, true);
-  // the model is built again from the file: parts are grouped by material when it loads
-  function setPrinted(on) {
-    asPrinted = on;
-    try { sessionStorage.setItem('as-printed', on ? '1' : '0'); } catch {}
-    $('bPrinted').classList.toggle('on', on);
-    load(false).catch(e => console.error(e));
-  }
-  $('bPrinted').onclick = () => setPrinted(!asPrinted);
-  $('bPrinted').classList.toggle('on', asPrinted);
+  $('bLight').onclick = () => setQuality(quality + 1, true);
 
   // ── the axis views ───────────────────────────────────────────────────────────────
   // look along a CAD direction, from that side: "+Z" is the view from above
@@ -1310,22 +1661,31 @@
          stamp.own ? stamp.own + ' kept as built here' : '',
          stamp.cache_age_min != null
            ? `the rest from build${stamp.build != null ? ' #' + stamp.build : ''}, ${Math.round(stamp.cache_age_min)} min old` : '',
-         stamp.drift ? 'NOT THE SAME TREE: ' + stamp.drift : '']
+         stamp.drift ? 'made from older code than that build (hover)' : '']
         .filter(Boolean).join(' · ')
       : '';
+    // the whole story of a mismatch is long: it is the line's tooltip, not the line
+    $('status').title = stamp && stamp.scratch && stamp.drift ? stamp.drift : '';
+    $('status').style.pointerEvents = $('status').title ? 'auto' : 'none';
     const hiddenNames = new Set(hiddenParts().map(p => p.name));
     const wasMode = mode;
     const gltf = await new GLTFLoader().loadAsync('assembly.glb?v=' + M.key);
     // what the export says the model IS: its name, a line about it, its build number
     const about = (gltf.asset && gltf.asset.extras) || {};
     document.title = $('title').textContent = about.title || 'Assembly';
+    if (about.tabs === false) tabsOff();                // this model is published alone
     $('subtitle').textContent = about.subtitle ? about.subtitle + ' · ' : '';
     $('deckhint').style.display = rig && rig.deck_prefixes ? '' : 'none';
-    // a scratch view is not a build: its number would be the surroundings', not its own
-    const buildN = stamp && stamp.scratch ? null : about.build != null ? about.build : rig && rig.build;
-    $('build').textContent = [buildN != null ? 'build #' + buildN : '',
+    // WHICH MODEL THIS IS, small, top right: the build's number, and for an agent's
+    // scratch view the build it stands on plus whose view and which of theirs
+    // ("build #880 + bronner 14"), so a glance says whether what is on screen is the latest
+    const scratch = stamp && stamp.scratch;
+    const buildN = scratch ? stamp.build : about.build != null ? about.build : rig && rig.build;
+    const whose = scratch && stamp.agent ? ' + ' + stamp.agent + (stamp.n ? ' ' + stamp.n : '') : '';
+    $('build').textContent = [buildN != null ? 'build #' + buildN + whose : whose.slice(3),
                               stamp ? 'local · ' + new Date(stamp.t * 1000).toLocaleTimeString() : '']
                              .filter(Boolean).join(' · ');
+    $('build').title = whose ? `build #${buildN} is the model the rest is from; over it, ${stamp.agent}'s own parts, as that worktree last made them (its view number ${stamp.n})` : '';
     disposeModel();
     curCarr = null; curPress = null;
     buildModel(gltf);
@@ -1336,27 +1696,34 @@
     if (first) frameBox(new THREE.Box3().setFromObject(M.root));
     else { setHidden(M.list.filter(p => hiddenNames.has(p.name)), true); syncDeckUI(); }
     if (wasMode === 'measure') setMode('measure');
+    if (NATIVE) { nat.all = true; nat.glb = new URL('assembly.glb?v=' + M.key, location.href).href; }
   }
   // The local server also says when this page's own file was last edited; the page then
   // reloads itself and comes back as it was (camera, hidden parts, section, mode).
   let pageStamp = null;
-  const KEEP = 'viewer-state';
+  // In the desktop shell it is kept ALL THE TIME and for good (KEPT), so a window that
+  // is closed, or started again on a newer program, comes back on the view it had.
+  const KEEP = 'viewer-state' + (TABKEY ? ':' + TABKEY : ''), KEPT = NATIVE ? localStorage : sessionStorage;
+  let keptAt = 0, restored = false;                 // nothing is kept before what was kept is back
   function keepState() {
-    try { sessionStorage.setItem(KEEP, JSON.stringify({
+    try { KEPT.setItem(KEEP, JSON.stringify({
       cam: camera.position.toArray(), tgt: controls.target.toArray(),
       hidden: hiddenParts().map(p => p.name), deck: deckVisible, mode,
       sec: { on: sec.on, axis: sec.axis, v: sec.v, flip: sec.flip } })); } catch {}
   }
   function restoreState() {
     let s = null;
-    try { s = JSON.parse(sessionStorage.getItem(KEEP)); sessionStorage.removeItem(KEEP); } catch {}
+    restored = true;
+    try { s = JSON.parse(KEPT.getItem(KEEP)); if (!NATIVE && !TABKEY) KEPT.removeItem(KEEP); } catch {}
     if (!s) return;
     camera.position.fromArray(s.cam); controls.target.fromArray(s.tgt); controls.update();
     restoreVis({ names: s.hidden, deck: s.deck });
     if (s.sec.on) setSection(true, s.sec.axis, s.sec.v, s.sec.flip);
     if (s.mode === 'measure') setMode('measure');
   }
+  let watchT = 0;                                   // the wait until the next look, while there is one
   async function watch() {
+    watchT = 0;
     if (!stamp) return;
     const pg = await fetchJSON('page.json?t=' + Date.now());
     if (pg) {
@@ -1365,12 +1732,172 @@
     }
     const s = await fetchJSON('stamp.json?t=' + Date.now());
     if (s && s.t !== stamp.t) { $('status').textContent = 'reloading…'; try { await load(false); } catch (e) { console.error(e); } }
-    setTimeout(watch, 1500);
+    watchT = setTimeout(watch, 1500);
+  }
+  // The desktop app is TOLD when a project has been built again (and when its tab is
+  // brought back): the look is taken now, not at the end of the wait.
+  if (NATIVE) nat.check = () => { if (watchT) { clearTimeout(watchT); watch(); } };
+  // ── TABS: ONE PROJECT EACH, ON CADKIT'S LOCAL SERVER ──────────────────────────────
+  // The local server (cadkit.web.view) shows every project of this machine, each at
+  // <server>/p/<key>/, and lists them at <server>/projects.json. A page at such an
+  // address shows a tab strip along its top: the projects open in this browser tab,
+  // the one shown marked, a dot on one built again since it was last looked at, and a
+  // "+" for the list of all of them. A change of tab is a change of address (the
+  // address IS the tab: a link opens the right project), and each tab comes back on
+  // the view it was left with.
+  // EVERYWHERE ELSE THERE IS NO STRIP AND NOTHING IS ASKED FOR: a published folder
+  // (index.html beside its assembly.glb, on any static host) is not at such an
+  // address, so it only ever shows the one model it ships with. Also off: with
+  // ?tabs=0 in the address; when the model says so (export(extras={"tabs": False}));
+  // when no projects.json answers; and in the desktop app, which has its own strip.
+  const TABS = { on: false, list: false, rows: [], open: [], seen: {}, since: 0 };
+  const tabStore = (k, v) => { try { if (v === undefined) return JSON.parse(sessionStorage.getItem(k));
+                                     sessionStorage.setItem(k, JSON.stringify(v)); } catch {} return null; };
+  function tabsOff() {
+    TABS.on = false; TABS.never = true;
+    document.body.classList.remove('tabs', 'list');
+  }
+  function tabGo(key) {
+    if (restored) keepState();
+    if (!TABS.open.includes(key)) TABS.open.push(key);
+    tabStore('viewer-tabs', TABS.open);
+    if (key === TABKEY) { TABS.list = false; tabsDraw(); return; }
+    location.href = TABBASE + 'p/' + encodeURIComponent(key) + '/';
+  }
+  function tabClose(key) {
+    const i = TABS.open.indexOf(key);
+    TABS.open.splice(i, 1);
+    tabStore('viewer-tabs', TABS.open);
+    if (key === TABKEY) tabGo(TABS.open[Math.min(i, TABS.open.length - 1)]); else tabsDraw();
+  }
+  // A TAB IS DRAGGED ALONG THE STRIP TO ANOTHER PLACE IN IT: it changes places with a
+  // neighbour as the pointer passes that one's middle, and where it is let go is told to
+  // `done` (the tabs' keys, in their new order). A press that does not travel is a click.
+  let tabDrag = false, tabDropped = 0;
+  function tabsDrag(strip, done) {
+    strip.onpointerdown = e => {
+      const tab = e.target.closest('.tab');
+      if (!tab || e.button !== 0 || e.target.closest('.x')) return;
+      const x0 = e.clientX;
+      const move = e => {
+        if (!tabDrag && Math.abs(e.clientX - x0) < 6) return;
+        tabDrag = true;
+        tab.classList.add('drag');
+        for (const o of strip.querySelectorAll('.tab')) {
+          if (o === tab) continue;
+          const r = o.getBoundingClientRect(), mid = r.left + r.width / 2;
+          const after = tab.compareDocumentPosition(o) & Node.DOCUMENT_POSITION_FOLLOWING;
+          if (after && e.clientX > mid) { o.after(tab); break; }
+          if (!after && e.clientX < mid) { o.before(tab); break; }
+        }
+      };
+      const up = () => {
+        removeEventListener('pointermove', move); removeEventListener('pointerup', up);
+        removeEventListener('pointercancel', up);
+        if (!tabDrag) return;
+        tabDrag = false; tabDropped = performance.now();
+        tab.classList.remove('drag');
+        done([...strip.querySelectorAll('.tab')].map(t => t.dataset.k));
+      };
+      addEventListener('pointermove', move); addEventListener('pointerup', up);
+      addEventListener('pointercancel', up);
+    };
+  }
+  const tabClicked = () => performance.now() - tabDropped > 80;     // not the click a drop ends in
+  function tabsDraw() {
+    if (tabDrag) return;
+    const mk = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls;
+                                     if (text != null) e.textContent = text; return e; };
+    const by = new Map(TABS.rows.map(r => [r.key, r]));
+    const strip = $('tabstrip');
+    strip.textContent = '';
+    for (const key of TABS.open) {
+      const r = by.get(key);
+      if (!r) continue;
+      const fresh = key !== TABKEY && r.stamp !== TABS.seen[key];
+      const tab = mk('div', 'tab' + (key === TABKEY && !TABS.list ? ' on' : '') + (fresh ? ' new' : ''));
+      tab.title = r.dir + (fresh ? '\nbuilt again since it was last looked at' : '');
+      tab.append(mk('span', 'dot'), mk('span', 'name', r.name));
+      if (TABS.open.length > 1) {
+        const x = mk('span', 'x', '×');
+        x.onclick = e => { e.stopPropagation(); tabClose(key); };
+        tab.append(x);
+      }
+      tab.dataset.k = key;
+      tab.onclick = () => { if (tabClicked()) tabGo(key); };
+      strip.append(tab);
+    }
+    tabsDrag(strip, keys => {
+      TABS.open = keys.concat(TABS.open.filter(k => !keys.includes(k)));
+      tabStore('viewer-tabs', TABS.open);
+      tabsDraw();
+    });
+    const plus = mk('div', TABS.list ? 'on' : '', '+');
+    plus.id = 'tabplus'; plus.title = 'projects';
+    plus.onclick = () => { TABS.list = !TABS.list; tabsDraw(); };
+    strip.append(plus);
+    document.body.classList.toggle('list', TABS.list);
+    const rows = $('projrows');
+    rows.textContent = '';
+    if (!TABS.list) return;
+    const when = t => {
+      if (!t) return 'no model';
+      const d = new Date(t * 1000), now = new Date();
+      const days = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) -
+                               new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
+      const hm = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return 'built ' + (days === 0 ? 'today ' + hm : days === 1 ? 'yesterday ' + hm
+           : d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' }) + ' ' + hm);
+    };
+    for (const r of TABS.rows) {
+      const row = mk('div', 'proj' + (r.missing ? ' missing' : ''));
+      row.title = r.missing ? 'its folder, or the model in it, is gone' : r.dir;
+      row.append(mk('b', '', r.name), mk('span', 'dir', '\u200e' + r.dir),
+                 mk('span', 'is', r.missing ? 'missing' : TABS.open.includes(r.key) ? 'open' : ''),
+                 mk('span', 'when', when(r.built)));
+      if (!r.missing) row.onclick = () => tabGo(r.key);
+      rows.append(row);
+    }
+  }
+  async function tabsPoll(first) {
+    const r = await fetchJSON(TABBASE + 'projects.json?t=' + Date.now());
+    if (!r || !Array.isArray(r.projects)) { if (first) return false; }
+    else {
+      TABS.rows = r.projects;
+      // a project that has shown itself since this strip came up gets a tab (and its dot)
+      for (const p of r.projects)
+        if (p.opened > TABS.since && !p.missing && !TABS.open.includes(p.key)) TABS.open.push(p.key);
+      TABS.since = Math.max(TABS.since, ...r.projects.map(p => p.opened));
+      const me = r.projects.find(p => p.key === TABKEY);
+      if (me) TABS.seen[TABKEY] = me.stamp;             // the one shown is being looked at
+      tabStore('viewer-tabs', TABS.open); tabStore('viewer-seen', TABS.seen); tabStore('viewer-since', TABS.since);
+      if (TABS.on || first) tabsDraw();
+    }
+    if (TABS.on || first) setTimeout(tabsPoll, 2000);
+    return true;
+  }
+  async function tabsInit() {
+    if (!TABKEY) return;
+    TABS.open = tabStore('viewer-tabs') || [];
+    TABS.seen = tabStore('viewer-seen') || {};
+    TABS.since = tabStore('viewer-since') || Infinity;  // (the first answer says what "since" is)
+    if (!TABS.open.includes(TABKEY)) TABS.open.push(TABKEY);
+    if (TABS.since === Infinity) TABS.since = -1e308, TABS.first = true;
+    const r = await fetchJSON(TABBASE + 'projects.json?t=' + Date.now());
+    if (!r || !Array.isArray(r.projects)) return;       // no such thing here: a plain static site
+    if (TABS.first) TABS.since = Math.max(0, ...r.projects.map(p => p.opened));
+    if (TABS.never) return;
+    TABS.on = true;
+    document.body.classList.add('tabs');
+    addEventListener('pagehide', () => { if (restored) keepState(); });
+    await tabsPoll(true);
   }
   async function init() {
     setHint();
+    tabsInit();
     try {
       await load(true);
+      await rtLoad();
       restoreState();
       $('loading').style.opacity = '0';
       setTimeout(() => $('loading').remove(), 400);
@@ -1383,18 +1910,29 @@
 
   let last = performance.now(), fpsT = last, fpsN = 0, stalled = false;
   const fpsEl = $('fps');
+  let fpsNow = 0;
+  function fpsLine() {                                  // also said at once when tracing starts or ends
+    if (NATIVE) { nativeLine(); return; }
+    fpsEl.textContent = quality === 3 && (traced || rt.shown)
+        ? 'ray traced · ' + rt.n + ' samples in ' + (rt.ms / 1000).toFixed(2) + ' s'
+        : Math.round(fpsNow) + ' fps · ' + renderer.info.render.calls + ' draws · ' +
+          Math.round(renderer.info.render.triangles / 1000) + 'k tris · ' + LIGHT[quality] +
+          (quality !== 3 ? '' : sec.on ? ' (not with a section cut)' : rt.asking ? ' (tracing…)'
+           : rt.error ? ' (' + rt.error + ')' : ' (when still)');
+  }
   function tick(now) {
     if (now - last > 250) stalled = true;               // a hidden tab, a load: not a slow device
     const dt = Math.min((now - last) / 1000, 0.05); last = now;
     if (++fpsN && now - fpsT >= 1000) {
-      const fps = fpsN * 1000 / (now - fpsT);
-      fpsEl.textContent = Math.round(fps) + ' fps · ' + renderer.info.render.calls + ' draws · ' +
-                          Math.round(renderer.info.render.triangles / 1000) + 'k tris · ' + LIGHT[quality];
-      if (stalled) stalled = false; else govern(fps, now);
+      const fps = fpsNow = fpsN * 1000 / (now - fpsT);
+      fpsLine();
+      // a second spent tracing says nothing about how fast this device DRAWS
+      if (stalled || traced) stalled = false; else govern(fps, now);
       fpsT = now; fpsN = 0;
     }
     applyRig(dt);
     controls.update();
+    if (NATIVE) { camera.updateMatrixWorld(); scene.updateMatrixWorld(); }   // no model is drawn to bring them up to date
     for (const o of selOverlays) if (o.userData.follow) o.matrix.copy(o.userData.follow.matrix);
     if (mode === 'measure' && lastMove && !down && M.geo) { setHover(snapAt(lastMove[0], lastMove[1])); lastMove = null; }
     if (meas.mid && meas.B) {
@@ -1406,11 +1944,13 @@
     requestAnimationFrame(tick);
   }
   // for poking at it from the console (and for the checks that drive the page)
-  window.viewer = { renderer, scene, camera, controls, sec, setSection, undo, viewFrom, setPrinted, setQuality, get quality() { return quality; }, key, THREE,
-                    frame() { controls.update(); lightDirty = true; renderer.info.reset(); drawFrame(); }, M, meas, pickAt, snapAt, setHidden, setMode,
+  window.viewer = { rt, renderer, scene, camera, controls, sec, setSection, undo, viewFrom, setQuality, get quality() { return quality; }, key, THREE,
+                    frame() { controls.update(); lightDirty = true; renderer.info.reset(); drawFrame(); },
+                    draw() { renderer.info.reset(); drawFrame(); return traced; }, M, meas, pickAt, snapAt, setHidden, setMode,
                     measureClick, between, showAll, get selection() { return selection; },
                     select(names) { selection = names.flatMap(n => M.byName.has(n) ? M.units.get(M.byName.get(n).unit) : []); drawSelection(); },
-                    selAction, loadGeo, toPx };
+                    selAction, loadGeo, toPx, NATIVE, native: nat };
+  if (NATIVE) { $('bLight').style.display = 'none'; addEventListener('resize', fpsLine); }
   setQuality(quality);
   init();
   requestAnimationFrame(tick);
