@@ -258,6 +258,15 @@ def mesh_shape(shape, tolerance=TOLERANCE, angular=ANGULAR, face_colors=None, co
             k = fmap.FindIndex(face)
             if k >= 1 and c is not None:
                 fc[k - 1, :3] = np.clip(np.round(np.array(c) * 255.0), 0, 255)
+        # ALPHA SAYS METAL (0) OR NOT (255): the model is opaque, so the channel is free,
+        # and the page and the tracer read a lead's or a shell's shine from it
+        from .finishes import METAL_COLOURS, METAL_TOL
+        lin = fc[:, :3].astype(np.float64) / 255.0
+        srgb = np.where(lin <= 0.0031308, 12.92 * lin, 1.055 * lin ** (1 / 2.4) - 0.055)
+        metal = np.zeros(nf, dtype=bool)
+        for m in METAL_COLOURS:
+            metal |= np.abs(srgb - np.array(m)).max(axis=1) < METAL_TOL
+        fc[metal, 3] = 0
         col = np.zeros((len(pos), 4), dtype=np.uint8)
         for k in range(3):
             col[tri[:, k]] = fc[tri_face]
@@ -302,7 +311,10 @@ def silk_units(done):
 def write_glb(parts, out: pathlib.Path, extras=None, units=None, mats=None) -> None:
     """parts = [(name, pos float32 (n,3), tri uint32 (m,3), (r, g, b, a), col)]: `col`
     is None, or uint8 (n,4) per-vertex colour (linear, as glTF's COLOR_0), and then the
-    part's material is plain white under it."""
+    part's material is plain white under it. A part whose `mats` entry is a filament
+    takes that filament's colour in place of its own, and so does one whose finish is a
+    single material (finishes.COLOURS: brass)."""
+    from .finishes import COLOURS, FILAMENTS, surfaces
     buf = bytearray()
     views, accessors, meshes, nodes, materials, mat_ix = [], [], [], [], [], {}
 
@@ -315,6 +327,10 @@ def write_glb(parts, out: pathlib.Path, extras=None, units=None, mats=None) -> N
         return len(views) - 1
 
     for name, pos, tri, rgba, col in parts:
+        if col is None and mats and mats.get(name) in FILAMENTS:
+            rgba = tuple(FILAMENTS[mats[name]][0]) + (1.0,)
+        elif col is None and mats and mats.get(name) in COLOURS:
+            rgba = tuple(COLOURS[mats[name]]) + (1.0,)
         key = (1.0, 1.0, 1.0, 1.0) if col is not None else tuple(round(float(c), 4) for c in rgba)
         if key not in mat_ix:
             mat_ix[key] = len(materials)
@@ -346,7 +362,7 @@ def write_glb(parts, out: pathlib.Path, extras=None, units=None, mats=None) -> N
         ex = {}
         if units and name in units:                # what it is selected and hidden with
             ex["unit"] = units[name]
-        if mats and mats.get(name):                # the filament it is printed in
+        if mats and mats.get(name):                # its filament, or what else it is made of
             ex["mat"] = mats[name]
         if ex:
             nodes[-1]["extras"] = ex
@@ -360,8 +376,7 @@ def write_glb(parts, out: pathlib.Path, extras=None, units=None, mats=None) -> N
             "nodes": nodes, "meshes": meshes, "materials": materials,
             "accessors": accessors, "bufferViews": views,
             "buffers": [{"byteLength": len(buf)}]}
-    if extras:
-        gltf["asset"]["extras"] = extras
+    gltf["asset"]["extras"] = dict(extras or {}, finishes=surfaces())
     js = _pad4(json.dumps(gltf, separators=(",", ":")).encode(), b" ")
     bn = _pad4(bytes(buf))
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -445,9 +460,14 @@ def step_parts(path):
     """[(name, shape, colour)] out of an assembly STEP file as cadquery writes one: each
     named, coloured part, where it stands. For a project that still hands the viewer its
     assembly.step; a project that has the parts in memory passes them and skips the
-    file."""
+    file. A STEP that is ONE PART and no assembly (a single-part project's only output)
+    is that part, named after the file."""
     import cadquery as cq
-    asm = cq.Assembly.importStep(str(path))
+    try:
+        asm = cq.Assembly.importStep(str(path))
+    except ValueError:                               # "does not contain an assembly"
+        import pathlib
+        return [(pathlib.Path(path).stem, cq.importers.importStep(str(path)), (0.8, 0.8, 0.8, 1.0))]
     out, seen = [], {}
     for name, node in asm.traverse():
         shapes = [s for s in getattr(node, "shapes", []) if s is not None]
@@ -466,7 +486,8 @@ def step_parts(path):
 
 
 def export(parts, out_dir, stem="assembly", extras=None, meshed=None, quiet=False,
-           boards=None, cache_dir=None, materials=None, whole=None, page=False):
+           boards=None, cache_dir=None, materials=None, whole=None, page=False,
+           units=None, parents=None):
     """Write <stem>.glb and <stem>.geo.json into out_dir.
 
     parts     = [(name, solid, colour)]; solid is a cq.Workplane / cq.Shape /
@@ -480,8 +501,16 @@ def export(parts, out_dir, stem="assembly", extras=None, meshed=None, quiet=Fals
                 board's footprint boxes are swapped for KiCad's own part models, or one
                 drawn by cadkit.web.parts (cadkit.web.boards says how, and what it
                 leaves alone). `cache_dir` keeps what that needs between runs.
-    materials = optional name -> "petg-gf" | "pctg" | ... , the filament a part is
-                printed in, for the page's as-printed view.
+    materials = optional name -> what the part is made of: the filament a printed part
+                is printed in (cadkit.web.finishes.FILAMENTS: "petg-gf" | "pctg" | ...),
+                whose colour and surface it is then shown in, or a bought part's
+                finish (FINISHES: "steel", "brass", "rubber", ...), which gives it that
+                surface in its own colour. None: the part is shown as the build has it.
+    units     = optional name -> the part it is ONE THING with, or None: a print in two
+                filaments is two parts here (deck base and deck colour) and one object
+                on the printer, so the page selects, hides and lists them as one. The
+                solids of one part are one thing without being told.
+    parents   = optional {piece name: its part's name}, for pieces split by the caller.
     whole     = names that must stay one part though drawn as several solids (see
                 pieces()); by default the names in the rig file beside the output.
     page      = True also writes the viewer page beside the model (index.html), which
@@ -492,6 +521,7 @@ def export(parts, out_dir, stem="assembly", extras=None, meshed=None, quiet=Fals
     if whole is None:
         whole = rig_names(out_dir / "rig.json")
     done, colors, solids = {}, {}, {}
+    parents = dict(parents or {})
     taken = {p[0] for p in parts}
     for part_name, solid, color in parts:
         if part_name in done or part_name in solids:
@@ -501,6 +531,8 @@ def export(parts, out_dir, stem="assembly", extras=None, meshed=None, quiet=Fals
         else:
             split = pieces(part_name, _topods(solid), taken, whole)
         for name, piece in split:
+            if name != part_name:
+                parents[name] = part_name
             solids[name] = piece
             m = (meshed or {}).get(name)
             if m is None:
@@ -509,16 +541,20 @@ def export(parts, out_dir, stem="assembly", extras=None, meshed=None, quiet=Fals
                 continue
             done[name] = m
             colors[name] = _rgba(color)
-    models = {}
+    models, plugs = {}, set()
     if boards is not None:
         try:
-            from .boards import detail, SEP
+            from .boards import detail, SEP, PLUG_PART, PLUG_RGB
             if callable(boards):
                 boards = boards()
             models = detail(done, lambda n: solids[n]() if callable(solids[n]) else solids[n],
                             boards, cache_dir)
             for n in done:
-                if n not in colors:
+                if n not in colors and n.endswith(PLUG_PART) and "col" not in done[n]:
+                    # a header's crimp housing: one colour, its own (not its board's)
+                    colors[n] = tuple(c ** 2.2 for c in PLUG_RGB) + (1.0,)
+                    plugs.add(n)
+                elif n not in colors:
                     colors[n] = colors.get(n.split(SEP)[0], (0.8, 0.8, 0.8, 1.0))
         except Exception as exc:          # the boxes are a complete model: never fail the export
             print("web boards: skipped (%s: %s) -- boards keep their boxes"
@@ -534,9 +570,26 @@ def export(parts, out_dir, stem="assembly", extras=None, meshed=None, quiet=Fals
     if materials is not None:
         try:
             mats = {n: materials(n) for n in done if "__" not in n}
-        except Exception as exc:             # the as-printed view is an extra
-            print("web export: no print materials (%s)" % exc)
-    write_glb(glb_parts, glb, extras=extras, units=silk_units(done), mats=mats)
+        except Exception as exc:             # the model is still worth showing
+            print("web export: no materials (%s)" % exc)
+    if plugs:
+        mats = dict(mats or {}, **{n: "nylon" for n in plugs if n in done})
+    # WHAT EACH PART IS ONE THING WITH: its part if it is one solid of several, then
+    # whatever the project says that part belongs to; lettering goes with its board
+    one = {}
+    for n in done:
+        if "__" in n:
+            continue
+        part = parents.get(n, n)
+        try:
+            said = units(part) if units is not None else None
+        except Exception:
+            said = None
+        if said or part != n:
+            one[n] = said or part
+    for ink, board in silk_units(done).items():
+        one[ink] = one.get(board, board)
+    write_glb(glb_parts, glb, extras=extras, units=one, mats=mats)
     side.write_text(json.dumps({"format": FORMAT, "units": "mm", "parts": geo, "models": models},
                                separators=(",", ":")))
     if page:

@@ -67,6 +67,8 @@ Two layers of reusable capability back a cadkit project:
   - `cadkit.fasteners` — shared M2/M4 hole/insert dims · `cadkit.cq_colors` — baked STEP colours
   - `cadkit.web` — the assembly viewer, a web page (`from cadkit.web import show`): select / hide /
     isolate, section, measure, shadows; real part models on circuit boards; publishable as a site
+  - `cadkit.lazy` — `name = lazy(_build)`: a module's solids built on FIRST USE, so a module
+    that imports another for a dimension does not wait for its parts
   - `cadkit.scratch` — the fast per-part iteration loop: cache the surroundings,
     rebuild only the part under work, and (`--gate`) run the project's own gates over
     that cache instead of a full rebuild; `cadkit.agents` — who owns which portion
@@ -125,15 +127,40 @@ py -3.12 -m cadkit.web.view
 ctrl+z / ctrl+y undo and redo those; `p` the parts list, `c` a section cut, `m` MEASURE.
 Measure reads the CAD kernel's own numbers — distance, angle, radius, between corners,
 edges, axes and faces — not triangles, so what it says is the model's figure. `l` steps
-the lighting (plain / shadows / shadows + occlusion), which also steps itself down on a
-device that cannot hold 60 fps. `k` shows the parts as printed, if the project names its
-filaments.
+the lighting (plain / shadows / shadows + occlusion / ray traced). The first three are
+drawn every frame, and the page steps down by itself on a device that cannot hold
+60 fps. RAY TRACED is never chosen for you: the drawn picture stays on screen, quick
+and live, and once the view is still ONE traced picture of exactly what is shown is
+swapped in (bounced light, soft shadows, reflections); any movement puts the drawn one
+straight back. The page does not trace it: a browser cannot reach a card's ray-tracing
+hardware. The local server keeps a Blender running in the background with the model
+loaded (`cadkit/web/trace.py`; Cycles on the card, denoised there) and answers in about
+half a second. So the level is offered only on the page served from the machine that
+built the model, and only if Blender is found there (`CADKIT_BLENDER`, the PATH, or the
+usual install folders); a published page has the three drawn levels. It pauses while a
+section cut is on.
+
+**The same viewer as a desktop window, path traced throughout:**
+`py -3.12 -m cadkit.web.desktop` (Windows). It shows the SAME page, see-through, over a
+path tracer of its own (`cadkit/desktop`, Rust on wgpu, the card's ray-tracing hardware
+through DirectX 12 or Vulkan): the page stays the whole of the UI (it picks, measures and
+lists on the model as ever, and tells the tracer the camera, what is hidden, selected,
+posed and cut) and draws the model itself only in a browser. So a control added to the
+page works in both, and only what changes THE PICTURE needs a word to the tracer
+(`nativeState()` in the page, the `view` message in `desktop/src/main.rs`). Moving, it is
+a few samples a pixel, denoised; at rest it gathers to the ray traced level's picture
+(it is matched to Blender's, within about 1/255) in well under a second and then stops
+working the card. The program is built on first use with Rust's cargo and kept outside
+the project (`cadkit/web/desktop.py` says where).
 
 **What a project can hand it** (keywords of `show()` / `cadkit.web.export()`):
 `boards=` its `cadkit.board_geom.Boards`, and every circuit board gets real part models
 in place of the footprint boxes (KiCad's library where this machine has it, else parts
-drawn by `cadkit.web.parts`); `materials=` a name → filament function, for the as-printed
-view; `extras={"title", "subtitle", "build"}`; and a `rig.json` beside the model animates
+drawn by `cadkit.web.parts`); `materials=` a name → what-it-is-made-of function: a
+printed part's filament, whose colour and surface it is then shown in, or a bought part's FINISH
+(`cadkit/web/finishes.py`: steel, polished, brass, gold, rubber, board...), so a bearing
+does not look moulded (component models get their metal from the library's own pin
+colours); `extras={"title", "subtitle", "build"}`; and a `rig.json` beside the model animates
 a mechanism. `export(..., page=True)` writes the page beside the model: that folder is a
 web site, which is how a project publishes its model (GitHub Pages serves it as is).
 
