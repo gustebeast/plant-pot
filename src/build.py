@@ -38,11 +38,10 @@ OUT = pathlib.Path(__file__).resolve().parent.parent
 _MESH_TOL     = 0.05   # max linear deviation (mm)
 _MESH_ANG_TOL = 0.2    # max angular deviation (rad)
 
-# Assembly palette — sage inner (plant), terracotta outer (pot), salmon counter.
+# Assembly palette — sage inner (plant), terracotta outer (pot).
 COLOR = {
     "inner_pot":     "#7CA982",
     "outer_pot":     "#8D6E63",
-    "build_counter": "#F0A878",
 }
 
 # `--part inner|outer|both` must be known BEFORE the geometry modules are
@@ -166,9 +165,9 @@ def _export_mesh(obj, step_path: str) -> str:
 
 
 # ── Build counter ────────────────────────────────────────────────────────────
-# A 3-D number floating above the assembly, bumped on every full build. Lets
-# you see at a glance in the viewer that a fresh build landed. Stored in
-# tools/build_counter.txt (gitignored); starts at 1 if missing.
+# Bumped on every full build and shown by the viewer beside the build's time, so a
+# fresh build is seen to have landed. Stored in tools/build_counter.txt (gitignored);
+# starts at 1 if missing.
 _BUILD_COUNTER_FILE = OUT / "tools" / "build_counter.txt"
 
 
@@ -182,20 +181,6 @@ def _bump_build_counter() -> int:
     except OSError:
         pass
     return n
-
-
-def _build_counter_model(n: int):
-    """Upright extruded number, centred at X=0 and floating above the pot's
-    rim. Returns None if the text engine isn't available — a font hiccup must
-    not break the build."""
-    try:
-        return (
-            cq.Workplane("XZ")
-            .center(0, d.POT_H + 30)
-            .text(str(n), 20, 4)
-        )
-    except Exception:
-        return None
 
 
 def _show() -> None:
@@ -213,11 +198,8 @@ def _show() -> None:
         # this shift only affects the combined view.
         _outer_z = -(d.FLOOR_T + _OUTER_FLOOR_GAP) if pot is not None else 0.0
         parts.append(("outer_pot", outer_pot.translate((0, 0, _outer_z)), color(COLOR["outer_pot"])))
-    counter = _build_counter_model(build_n)
-    if counter is not None:
-        parts.append(("build_counter", counter, color(COLOR["build_counter"])))
     print(f"[build #{build_n}]", flush=True)
-    step("web viewer", lambda: show(parts, root=OUT, title="Plant pot"))
+    step("web viewer", lambda: show(parts, root=OUT, title="Plant pot", extras={"build": build_n}))
 
 
 def main() -> None:
